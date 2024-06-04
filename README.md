@@ -1,1 +1,1 @@
-# check_mk_automated_downtimes
+# Automated downtimes for Checkmk
