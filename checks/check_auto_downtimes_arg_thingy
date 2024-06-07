@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+
+# +------------------------------------------------------------+
+# |                                                            |
+# |             | |             | |            | |             |
+# |          ___| |__   ___  ___| | ___ __ ___ | | __          |
+# |         / __| '_ \ / _ \/ __| |/ / '_ ` _ \| |/ /          |
+# |        | (__| | | |  __/ (__|   <| | | | | |   <           |
+# |         \___|_| |_|\___|\___|_|\_\_| |_| |_|_|\_\          |
+# |                                   custom code by SVA       |
+# |                                                            |
+# +------------------------------------------------------------+
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   Copyright (C) 2024  SVA System Vertrieb Alexander GmbH
+#                       by michael.hoess@sva.de + colleagues
+
+
+def arguments_maintenance(params):
+    args = []
+
+    # print(params)
+
+    args += ["--host_name", "$HOSTNAME$"]
+
+    if "connect_to" in params:
+        if (type(params["connect_to"]) is tuple) and (len(params["connect_to"]) == 5):
+            host, port, site, verify_ssl, no_proxy = params["connect_to"]
+            args += ["--omd_host", host]
+            args += ["--omd_port", f"{port}"]
+            args += ["--omd_site", site]
+            if verify_ssl:
+                args += ["--verify_ssl"]
+            if no_proxy:
+                args += ["--no_proxy"]
+
+    if "display_service_name" in params:
+        args += ["--display_service_name", params["display_service_name"]]
+
+    if "automation_user" in params:
+        args += ["--automation_user", params["automation_user"]]
+
+    if "default_downtime" in params:
+        args += ["--default_downtime", params["default_downtime"]]
+
+    if params.get("debug_log"):
+        args += ["--debug_log"]
+
+    if "monitor" in params:
+        if type(params["monitor"]) is tuple:
+            maintenance_monitor_tuple = params["monitor"]
+            args += ["--monitor_host", maintenance_monitor_tuple[0]]
+            args += ["--monitor_service", maintenance_monitor_tuple[1]]
+            args += ["--monitor_service_regex", maintenance_monitor_tuple[2]]
+        elif params.get("monitor", None) == 100:  # THISHOST
+            args += ["--monitor_host", "$HOSTNAME$"]
+        else:
+            args += ["--monitor_host", params["monitor"]]
+
+    react_on = params.get("react_on", {})
+    # If unset legacy rule assume we react on downtimes!
+    if react_on.get("monitor_dts", True) == False:
+        args += ["--monitor_no_downtimes"]
+
+    if react_on.get("monitor_state_1", False):
+        args += ["--monitor_state_1"]
+
+    if react_on.get("monitor_state_2", False):
+        args += ["--monitor_state_2"]
+
+    if react_on.get("monitor_state_3", False):
+        args += ["--monitor_state_3"]
+
+    if "dependency_detection" in params:
+        dtup = params["dependency_detection"]
+        detect_mode = dtup[0]
+        detect_prm = dtup[1] if len(dtup) > 1 else None
+
+        # Pass main mode
+        args += ["--dependency_detection", detect_mode]
+
+        # Pass extra params depending on main mode
+        if detect_mode == "fully_automated":
+            if detect_prm:
+                args += ["--optional_identifier", detect_prm]
+
+        elif detect_mode == "search_parent_child":
+            if detect_prm:
+                args += ["--optional_identifier", detect_prm]
+
+        elif detect_mode == "specify_targets":
+            for scope in detect_prm:
+                target_name = scope[0]
+                target_host = scope[1][0]
+                target_service = scope[1][1]
+
+                # Fix bad spec
+                target_host = "" if target_host == "None" else target_host
+
+                args += [
+                    "--target",
+                    "%s,%s,%s" % (target_name, target_host, target_service),
+                ]
+
+        search_opts = params.get("search_opts", {})
+        if search_opts.get("hostname_boundary_match") is False:
+            args += ["--no_hostname_boundary_match"]
+        if search_opts.get("case_insenstive") is True:
+            args += ["--case_insensitive"]
+        if search_opts.get("strip_fqdn") is True:
+            args += ["--strip_fqdn"]
+
+    # print(f"ARGS ==> {args}")
+
+    return args
+
+
+active_check_info["maintenance"] = {
+    "command_line": "check_auto_downtimes.py $ARG1$",
+    "argument_function": arguments_maintenance,
+    "service_description": lambda params: "%s" % params["display_service_name"],
+    "has_perfdata": False,
+}
