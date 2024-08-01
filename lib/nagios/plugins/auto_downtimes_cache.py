@@ -26,7 +26,6 @@ import os
 import re
 import pickle
 import urllib.parse
-import time
 
 from typing import Dict, Iterable, List, Optional, Tuple
 from dataclasses import dataclass
@@ -63,23 +62,20 @@ class FLock:
         self.release()
 
     def acquire(self):
-        for _ in range(10):  # 10 attempts to acquire lock
-            try:
-                dbg(f"Trying to acquire lock {self.lock_fn}")
-                if not os.path.exists(self.lock_fn):
-                    with open(self.lock_fn, "w") as f:
-                        f.write("")
+        dbg(f"Acquiring lock {self.lock_fn}")
 
-                f = open(self.lock_fn, "r")
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                dbg(f"Acquired lock {self.lock_fn}")
-                self.lockf = f
-                return
-            except Exception:
-                dbg("Lock is held by another process, retrying...")
-                time.sleep(1)  # Retry after 1 second
+        if not os.path.exists(self.lock_fn):
+            with open(self.lock_fn, "w") as f:
+                f.write("")
 
-        raise FLockException("Can't acquire lock after several attempts")
+        f = open(self.lock_fn, "r")
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            dbg(f"Acquired lock {self.lock_fn}")
+            self.lockf = f
+        except Exception:
+            self.lockf = None
+            raise FLockException("Can't acquire lock")
 
     def release(self):
         if self.lockf != None:
