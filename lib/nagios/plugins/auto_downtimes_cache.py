@@ -25,6 +25,7 @@ import fcntl
 import os
 import re
 import pickle
+import time
 import urllib.parse
 
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -291,9 +292,11 @@ class InfoCache:
         try:
             ft = datetime.datetime.utcfromtimestamp(os.path.getmtime(InfoCache.path))
             age = (datetime.datetime.utcnow() - ft).total_seconds()
-            return ft, age
+            expired = age >= 60 * MAX_CACHE_AGE_MINUTES
+            # expired = True
+            return ft, age, expired
         except:
-            return None, None
+            return None, None, True
 
     def load(self) -> bool:
         fn = self.path
@@ -357,6 +360,9 @@ class InfoCache:
 
                 fn = self.path
                 os.makedirs(os.path.dirname(fn), exist_ok=True)
+                time.sleep(
+                    5
+                )  # Paranoia too reduce races, by instances started before us
                 with open(fn, "wb") as f:
                     pickle.dump(self._cache, f)
 
@@ -413,9 +419,15 @@ class LocalStateCache:
                 # Force refresh every x minutes, must be newer than info-cache
                 # This age is only a rough estimate, since the
                 # cache usually gets updated on each run with
-                # state date
+                # state date.
+                # Also our cache may be invalid if global-cache-file-time
+                # is None. In this case the global cache was deleted or is expired
+                # In this case we won't use the local cache data, which
+                # triggers a global-cache-load, which then should trigger
+                # a global cache refresh. Not nice...
                 if (age < 60 * MAX_CACHE_AGE_MINUTES) and (
-                    cache_file_time >= info_cache_file_time
+                    info_cache_file_time is not None
+                    and cache_file_time >= info_cache_file_time
                 ):
                     try:
                         with open(path, "rb") as f:

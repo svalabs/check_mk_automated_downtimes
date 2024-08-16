@@ -42,7 +42,7 @@ from auto_downtimes_lqapi import LqAPI
 from auto_downtimes_restapi import RestAPI
 from auto_downtimes_cache import LocalState, LocalStateCache, InfoCache
 
-VERSION = "2.0.0-20240706-151721"
+VERSION = "2.0.2-20241308-172322"
 HASH_ID = "check_auto_downtimes"
 
 #
@@ -464,11 +464,12 @@ def _ensure_tgt_list(rest_api: RestAPI, lost: LocalState, maintenance_by: str):
 
 
 def _get_local_state(lq_api: LqAPI):
-    glob_ft, glob_age = InfoCache.get_cache_file_time()
+    glob_ft, glob_age, expired = InfoCache.get_cache_file_time()
+    dbg(f"Global cache age: {glob_age}, expired: {expired}")
 
     lost, age = LocalStateCache.load(
         env.get_my_name(),
-        glob_ft,
+        glob_ft if not expired else None,
         env.default_downtime,
         env.cmd_line_hash,
     )

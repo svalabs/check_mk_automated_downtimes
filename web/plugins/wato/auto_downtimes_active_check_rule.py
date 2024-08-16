@@ -400,7 +400,7 @@ _valuespec_maintenance_elements = [
         Checkbox(
             title=_("Enable debugging"),
             help=_(
-                "Enable debugging to ~/tmp/maintenance.py.log. Only enable on problems, may fill up your filesystem and eat performance!"
+                "Enable debugging to ~/tmp/auto_downtimes.log. Only enable on problems, may fill up your filesystem and eat performance!"
             ),
             default_value=False,
         ),
