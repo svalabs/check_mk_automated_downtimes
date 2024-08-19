@@ -19,6 +19,7 @@
 #   Copyright (C) 2024  SVA System Vertrieb Alexander GmbH
 #                       by michael.hoess@sva.de + colleagues
 
+import os
 
 def arguments_maintenance(params):
     args = []
@@ -37,6 +38,11 @@ def arguments_maintenance(params):
                 args += ["--verify_ssl"]
             if no_proxy:
                 args += ["--no_proxy"]
+    else:
+        args += ["--omd_host", "127.0.0.1"]
+        args += ["--omd_port", "5000"]
+        args += ["--omd_site", os.getenv("OMD_SITE")]
+        args += ["--no_proxy"]
 
     if "display_service_name" in params:
         args += ["--display_service_name", params["display_service_name"]]
