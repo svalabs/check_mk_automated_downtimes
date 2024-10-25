@@ -42,7 +42,7 @@ from auto_downtimes_lqapi import LqAPI
 from auto_downtimes_restapi import RestAPI
 from auto_downtimes_cache import LocalState, LocalStateCache, InfoCache
 
-VERSION = "2.0.2-20241308-172322"
+VERSION = "2.0.3-20242510-113731"
 HASH_ID = "check_auto_downtimes"
 
 #

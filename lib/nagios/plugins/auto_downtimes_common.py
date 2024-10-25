@@ -358,7 +358,7 @@ def parse_args(version: str = "") -> Env:
         "--no_hostname_boundary_match",
         action="store_true",
         default=False,
-        help="When searching for hostname, limit search on word-boundaries",
+        help="When searching for hostname, disable limiting search on word-boundaries",
     )
     parser.add_argument(
         "--strip_fqdn",

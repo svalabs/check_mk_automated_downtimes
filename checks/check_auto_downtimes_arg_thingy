@@ -109,7 +109,7 @@ def arguments_maintenance(params):
         search_opts = params.get("search_opts", {})
         if search_opts.get("hostname_boundary_match") is False:
             args += ["--no_hostname_boundary_match"]
-        if search_opts.get("case_insenstive") is True:
+        if search_opts.get("case_insensitive") is True:
             args += ["--case_insensitive"]
         if search_opts.get("strip_fqdn") is True:
             args += ["--strip_fqdn"]

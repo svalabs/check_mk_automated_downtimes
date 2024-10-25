@@ -259,12 +259,12 @@ class InfoCache:
         if host_name_regex != None:
             if not host_name_regex.startswith("^"):
                 host_name_regex = ".*" + host_name_regex
-
-        if boundary_match:
+        
+        if boundary_match:                        
             name_regex = WORD_BOUND + name_regex + WORD_BOUND
 
         flags = 0
-        if case_insensitive:
+        if case_insensitive:            
             flags = re.IGNORECASE
 
         re1 = re.compile(name_regex, flags)

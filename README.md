@@ -14,6 +14,8 @@ See exchange.checkmk.com
 
 ### Changes
 
+2.0.3:
+  - Fix param eval for case-insensitive
 2.0.2:
   - Improve refreshing of cache in certain circumstances
   - Fixes/Improvements in ruleditor (Thanx to TuneFish41)
