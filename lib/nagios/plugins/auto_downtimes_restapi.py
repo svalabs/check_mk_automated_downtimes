@@ -396,35 +396,62 @@ class RestAPI:
         # dbg(f***REST Child {parent_host} / {res}")
         return list(res)
 
+
+    def _parse_perfdata(s: str) -> Dict:
+        res = {}
+        if s:
+            parts = s.split(" ")
+            for p in parts:
+                kv = p.split("=", maxsplit=2)
+                if len(kv) < 2:
+                    continue
+                k, v = kv
+                v = v.split(";")[0]
+                try:                    
+                    v = int(v)
+                except:
+                    pass
+                res[k] = v
+        return res
+
+
     def find_hosts_having_a_service(
-        self, host_name: str, svc_name: str, svc_plugin_output_regex: str
-    ) -> Iterable[str]:
+        self, host_name: str, svc_name: str, svc_plugin_output_regex: str, include_perfdata: bool = False
+    ) -> Iterable[Tuple[str, str, str]]:
         # Was:
         # LqlCheckMaintenanceState = "GET services\nFilter: host_name ~ ^" + monitor_host + "$\nFilter: display_name ~ ^" + monitor_service + "$\nFilter: plugin_output ~ " + monitor_service_regex + "\nColumns: host_name\n"
 
         res = []
         dct = {}
-        dct["columns"] = ["host_name"]
+        dct["columns"] = ["host_name", "plugin_output"]
+        if include_perfdata:
+            dct["columns"].append("perf_data") # 2.3+: field 'performance_data' returns a dict!
+
+        pr = svc_plugin_output_regex.replace('\\', '\\\\') # old CMK 2.2-Python does not allow this in f-string
         dct["query"] = (
             '{"op": "and", "expr": ['
             + f'{{ "op": "~", "left": "host_name", "right": "^{host_name}$" }}, '
             + f'{{ "op": "~", "left": "display_name", "right": "^{svc_name}$" }}, '
-            + f'{{ "op": "~", "left": "plugin_output", "right": "{svc_plugin_output_regex}" }} '
+            + f'{{ "op": "~", "left": "plugin_output", "right": "{pr}" }} '
             + "]}"
         )
         resp = self._get("domain-types/service/collections/all", dct)
 
-        res = set()
+        res = {}
         fail = None
         if resp.status_code == 200:
             data = resp.json()
             if "value" in data:
                 for e in data["value"]:
                     hn = e.get("extensions", {}).get("host_name", None)
+                    plugin_output = e.get("extensions", {}).get("plugin_output", None)
+                    perfdata = e.get("extensions", {}).get("perf_data", None) if include_perfdata else None # field 'performance_data' returns a dict!
+                    perfdata = RestAPI._parse_perfdata(perfdata)
+                    #print(perfdata)
                     if hn is None:
                         fail = "No data in response"
-                        break
-                    res.add(hn)
+                        break                                            
+                    res[hn] = (plugin_output, perfdata)
             else:
                 fail = "No 'value' in response"
         else:
@@ -436,7 +463,10 @@ class RestAPI:
             )
 
         # dbg(f"**REST find_hosts_having_a_service {list(res)}")
-        return list(res)
+        fres = []
+        for k, v in res.items():
+            fres.append((k, v[0], v[1]))
+        return list(fres)
 
     def find_parents_of_host(
         self, host_name: str, case_insensitive: bool

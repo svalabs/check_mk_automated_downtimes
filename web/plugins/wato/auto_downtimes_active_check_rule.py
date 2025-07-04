@@ -48,6 +48,7 @@ from cmk.gui.valuespec import (
     Hostname,
     TextAscii,
     Transform,
+    RegExp,
     Tuple,
 )
 
@@ -181,10 +182,51 @@ _valuespec_maintenance_elements = [
                             title=_("Servicename"),
                             size=40,
                         ),
-                        TextAscii(
+                        RegExp(
                             title=_("Set downtime on service output (optional)"),
-                            help="Instead of using service-downtime: Specify the service output which should trigger a downtime. E.g. 'System is running Maintenance mode' (Regex, non-anchored)",
-                            size=40,
+                            mode="infix",
+                            help="Instead of using service-downtime: Specify the service output which should trigger a downtime. E.g. <tt>System is running Maintenance mode</tt><br>"
+                            + "Capturing start/enddates for downtime in plugin output like this: <tt>End (?P<END>.+), start at (?P<START>.+).</tt>. Times must be in ISO-Format.",
+                            maxlen=80,
+                        ),
+                        Dictionary(
+                            title=_("Read times from perfdata (-> inline-help!)"),
+                            help=_(
+                                "This feature currently only works, when '<tt>Set downtime on service output</tt>' is also enabled!<br>This feautre will set downtimes when the actual time is in the range of the timestamps specified in the perfdata +/- 10 minutes.<br>This feature disables the capturing-by-regex from plugin output' feature above."
+                            ),
+                            elements=[
+                                (
+                                    "timerange",
+                                    Tuple(
+                                        show_titles=True,
+                                        title=_("Name of timerange perfvalues"),
+                                        help=_(
+                                            "Perfdata must contains unix-timestamps"
+                                        ),
+                                        orientation="horizontal",
+                                        elements=[
+                                            TextAscii(
+                                                title=_("Name of start value"),
+                                                size=40,
+                                            ),
+                                            TextAscii(
+                                                title=_("Name of end value"),
+                                                size=40,
+                                            ),
+                                        ],
+                                    ),
+                                ),
+                                (
+                                    "set_dt_flag",
+                                    TextAscii(
+                                        title=_(
+                                            "Name of value containing flag for setting downtimes"
+                                        ),
+                                        help="Allows optionally to suppres setting a downtime, even when the timerange above suggests setting a downtime",
+                                    ),
+                                ),
+                            ],
+                            optional_keys=["timerange", "set_dt_flag"],
                         ),
                     ],
                 ),
@@ -337,6 +379,19 @@ _valuespec_maintenance_elements = [
         _valuespec_search_opts,
     ),
     (
+        "dt_end_gracetime_s",
+        Integer(
+            title=_("Grace time in seconds before downtime removal"),
+            help=_(
+                "If prequisite for a downtimes are not met anymore, the downtime will be removed after this time (instead of immediately)."
+            ),
+            default_value=0,
+            minvalue=0,
+            maxvalue=3600,
+            unit=_("s"),
+        ),
+    ),
+    (
         "default_downtime",
         Transform(
             Integer(
@@ -345,6 +400,9 @@ _valuespec_maintenance_elements = [
                     "Set host / services for X minutes in downtime, should be min. 2.5x normal check interval"
                 ),
                 default_value=30,
+                minvalue=3,
+                maxvalue=1440,
+                unit=_("min"),
             ),
             back=lambda x: int(x),
             forth=lambda x: int(x),
@@ -460,6 +518,11 @@ def _upg_maintenance_config(dct: Dict) -> Dict:
         if dct.get("monitor") == 100:
             dct["monitor"] = "$HOSTNAME$"
 
+        # Update monitor by service
+        m = dct.get("monitor")
+        if type(m) == tuple and len(m) == 3:
+            dct["monitor"] = (m[0], m[1], m[2], {})
+
         # Update/set defaults on other stuff
 
         dct.setdefault("debug_log", False),
@@ -478,10 +541,24 @@ def _valuespec_activecheck_auto_downtimes():
     return Transform(
         Dictionary(
             title=_("Automated downtimes"),
-            help=_("Enable/disable downtimes when maintenance state has been changed"),
+            help=_(
+                """
+Enable/disable downtimes when maintenance state has been changed! \n\n<br>
+Most test-input fields (hostnames, servicenames, display_name) support macros! 
+You can also apply regexes in those fields like \n\n<br>
+'Tunnel {{$HOSTNAME$~~([0-9]).*~~\\1}}' \n\n<br>
+(Format: 'Text~~Regex~~Result \\1 \\2... specifying capture groups')
+"""
+            ),
             elements=_valuespec_maintenance_elements,
             hidden_keys=[],
-            optional_keys=["reference", "warning", "critical", "connect_to"],
+            optional_keys=[
+                "reference",
+                "warning",
+                "critical",
+                "connect_to",
+                "dt_end_gracetime_s",
+            ],
         ),
         forth=_upg_maintenance_config,
     )

@@ -16,14 +16,93 @@
 #   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #   GNU General Public License for more details.
 #
-#   Copyright (C) 2024  SVA System Vertrieb Alexander GmbH
+#   Copyright (C) 2025  SVA System Vertrieb Alexander GmbH
 #                       by michael.hoess@sva.de + colleagues
+
+import re
+
+
+def collect_macros():
+    from cmk.base.check_api import host_name
+
+    hostname = host_name()
+
+    macros = {}
+
+    try:
+        import cmk.base.config as _config
+
+        try:
+            ha = _config.get_config_cache().get_host_attributes(hostname)
+            hc = _config.get_config_cache().get_host_macros_from_attributes(
+                hostname, ha
+            )
+        except:  # V2.0 AP
+            import cmk.base.core_config as core_config
+
+            cg = _config.get_config_cache()
+            ha = core_config.get_host_attributes(hostname, cg)
+            hc = core_config.get_host_macros_from_attributes(hostname, ha)
+        macros = hc
+    except:
+        print("Error fetching host-attributes")
+
+    # print(macros)
+    return macros
+
+
+# replace regex macros
+def process_regex(input_string: str) -> str:
+    def process_single_expression(expression: str) -> str:
+        # Split the expression into three parts using "~~" as the delimiter
+        parts = expression.split("~~")
+        if len(parts) != 3:
+            print(f"Invalid regex string: {expression}")
+            return f"{{{{{expression}}}}}"  # Return the original expression wrapped in {{ }}
+
+        first_part, regex_part, third_part = parts
+
+        # Apply the regex to the first part
+        match = re.search(regex_part, first_part)
+        if not match:
+            return f"{{{{{expression}}}}}"  # Return the original expression wrapped in {{ }}
+
+        # Replace \1, \2, etc., in the third part with the corresponding capture groups
+        result = re.sub(r"\\(\d+)", lambda m: match.group(int(m.group(1))), third_part)
+        return result
+
+    # Find all expressions wrapped in {{ }}
+    matches = re.findall(r"{{(.*?)}}", input_string)
+
+    # Process each expression and replace it in the input string
+    for match in matches:
+        processed = process_single_expression(match)
+        input_string = input_string.replace(f"{{{{{match}}}}}", processed)
+
+    return input_string
+
+
+# Platzhalter
+def replace_macros(macros, txt):
+    if not txt:
+        return txt
+
+    for k, v in macros.items():
+        txt = txt.replace(k, str(v))
+        txt = process_regex(txt)
+
+    return txt
 
 
 def arguments_maintenance(params):
     args = []
 
-    # print(params)
+    # Sowas funktioniert mangels hostnamen hier nicht :(
+    try:
+        macros = collect_macros()
+    except Exception as e:
+        print("Error fetching macros")
+        macros = {}
 
     args += ["--host_name", "$HOSTNAME$"]
 
@@ -39,7 +118,10 @@ def arguments_maintenance(params):
                 args += ["--no_proxy"]
 
     if "display_service_name" in params:
-        args += ["--display_service_name", params["display_service_name"]]
+        args += [
+            "--display_service_name",
+            replace_macros(macros, params["display_service_name"]),
+        ]
 
     if "automation_user" in params:
         args += ["--automation_user", params["automation_user"]]
@@ -47,19 +129,42 @@ def arguments_maintenance(params):
     if "default_downtime" in params:
         args += ["--default_downtime", params["default_downtime"]]
 
+    if "dt_end_gracetime_s" in params:
+        args += ["--dt_end_gracetime_s", params["dt_end_gracetime_s"]]
+
     if params.get("debug_log"):
         args += ["--debug_log"]
 
     if "monitor" in params:
         if type(params["monitor"]) is tuple:
             maintenance_monitor_tuple = params["monitor"]
-            args += ["--monitor_host", maintenance_monitor_tuple[0]]
-            args += ["--monitor_service", maintenance_monitor_tuple[1]]
-            args += ["--monitor_service_regex", maintenance_monitor_tuple[2]]
+            args += [
+                "--monitor_host",
+                replace_macros(macros, maintenance_monitor_tuple[0]),
+            ]
+            args += [
+                "--monitor_service",
+                replace_macros(macros, maintenance_monitor_tuple[1]),
+            ]
+            args += [
+                "--monitor_service_regex",
+                replace_macros(macros, maintenance_monitor_tuple[2]),
+            ]
+            if len(maintenance_monitor_tuple) > 3:
+                dct = maintenance_monitor_tuple[3]
+                if dct:
+                    tr = dct.get("timerange")
+                    st = dct.get("set_dt_flag")
+                    if tr:
+                        args += ["--perfname_start", tr[0]]
+                        args += ["--perfname_end", tr[1]]
+                        if st:
+                            args += ["--perfname_set_dt", st]
+
         elif params.get("monitor", None) == 100:  # THISHOST
             args += ["--monitor_host", "$HOSTNAME$"]
         else:
-            args += ["--monitor_host", params["monitor"]]
+            args += ["--monitor_host", replace_macros(macros, params["monitor"])]
 
     react_on = params.get("react_on", {})
     # If unset legacy rule assume we react on downtimes!
@@ -86,17 +191,17 @@ def arguments_maintenance(params):
         # Pass extra params depending on main mode
         if detect_mode == "fully_automated":
             if detect_prm:
-                args += ["--optional_identifier", detect_prm]
+                args += ["--optional_identifier", replace_macros(macros, detect_prm)]
 
         elif detect_mode == "search_parent_child":
             if detect_prm:
-                args += ["--optional_identifier", detect_prm]
+                args += ["--optional_identifier", replace_macros(macros, detect_prm)]
 
         elif detect_mode == "specify_targets":
             for scope in detect_prm:
-                target_name = scope[0]
-                target_host = scope[1][0]
-                target_service = scope[1][1]
+                target_name = replace_macros(macros, scope[0])
+                target_host = replace_macros(macros, scope[1][0])
+                target_service = replace_macros(macros, scope[1][1])
 
                 # Fix bad spec
                 target_host = "" if target_host == "None" else target_host

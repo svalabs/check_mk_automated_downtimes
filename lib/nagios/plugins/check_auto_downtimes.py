@@ -23,10 +23,13 @@
 import datetime
 import hashlib
 import traceback
+import re
 import sys
 import time
 
 from typing import Iterable, Optional, Tuple, Literal
+
+from re import Pattern
 
 from auto_downtimes_common import (
     dbg,
@@ -42,7 +45,7 @@ from auto_downtimes_lqapi import LqAPI
 from auto_downtimes_restapi import RestAPI
 from auto_downtimes_cache import LocalState, LocalStateCache, InfoCache
 
-VERSION = "2.0.3-20242510-113731"
+VERSION = "2.0.8-20250204-160356"
 HASH_ID = "check_auto_downtimes"
 
 #
@@ -349,13 +352,16 @@ class Downtimes:
         task_info: str,
         remove_existing: bool,
     ) -> None:
-        """!!! SINGLE Add, should be not longer used !!!"""
-
         dbg(f"{task_info} (targets: {len(targets)})")
 
+        ds = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         downtime_hash = Downtimes.get_hash()
+        comment = f"MAINT#{downtime_hash} $TYP$-DT (set by rule '{env.my_svc_name}@{env.my_host_name} at {ds}UTC')"
 
-        comment = f"MAINT#{downtime_hash} $TYP$-DT (set by rule '{env.my_svc_name}@{env.my_host_name}')"
+        if remove_existing:
+            # Note this may not be 100% exact in case new targets appear during a downtime, but
+            # otherwise batching needs to be enhanced/split up
+            comment += "(Renew)"
 
         start = datetime.datetime.now()
         end = start + datetime.timedelta(minutes=env.default_downtime)
@@ -474,7 +480,7 @@ def _get_local_state(lq_api: LqAPI):
         env.cmd_line_hash,
     )
     if lost is None:
-        lost = LocalState(None, None)
+        lost = LocalState(None, None, None)
 
     if lost.normal_check_interval is None:
         normal_check_interval = lq_api.get_service_check_interval(
@@ -501,6 +507,18 @@ def _get_local_state(lq_api: LqAPI):
     return lost, glob_age, age
 
 
+def _extract_from_perfdata(perfdata: str) -> Tuple[Optional[int], Optional[int], bool]:
+    start = perfdata.get(env.perfname_start, None)
+    end = perfdata.get(env.perfname_end, None)
+    set_dt = perfdata.get(env.perfname_set_dt, None) if env.perfname_set_dt else True
+
+    if not end:
+        end = None
+        set_dt = False
+
+    return (start, end, set_dt)
+
+
 def _get_maint_by():
     if (
         env.monitor_host
@@ -521,8 +539,45 @@ def _get_maint_by():
     return _maintenance_by
 
 
+def _needs_gracetime(local_state: LocalState, dt_prereqs_met: bool) -> bool:
+    """
+    Check if we are in grace time of a downtime.
+    Returns True if we are in grace time, False otherwise.
+    """
+    res = False
+
+    # dbg(
+    #     f"Grace time check: was last requried: {local_state.downtime_was_reqd_at}, PreReqs met: {dt_prereqs_met}, GraceTime: {env.dt_end_gracetime_s}"
+    # )
+    if dt_prereqs_met:
+        local_state.downtime_was_reqd_at = datetime.datetime.now(
+            tz=datetime.timezone.utc
+        )
+
+    elif env.dt_end_gracetime_s > 0:
+        dbg(
+            f"Grace time check: Checking if we are in an ended downtime-reqirement. Last required: {local_state.downtime_was_reqd_at}, GraceTime: {env.dt_end_gracetime_s}..."
+        )
+        # Check if we are in grace time
+        if (
+            local_state.downtime_was_reqd_at
+        ):  # dt was not needed so far yet, so wen skip
+            now = datetime.datetime.now(tz=datetime.timezone.utc)
+            delta = now - local_state.downtime_was_reqd_at
+            if delta.total_seconds() < env.dt_end_gracetime_s:
+                res = True
+        if res:
+            dbg("Grace time check: yes we are in grace time")
+        else:
+            dbg("Grace time check: not required, we can return false")
+
+    return res
+
+
 def _needs_maint_by_host(
-    lq_api: LqAPI, rest_api: RestAPI
+    lq_api: LqAPI,
+    rest_api: RestAPI,
+    local_state: LocalState,
 ) -> Tuple[bool, str, Optional[Iterable[Downtime]]]:
 
     curr_dts: Optional[Iterable[Downtime]] = None
@@ -555,15 +610,20 @@ def _needs_maint_by_host(
         if state is not None:
             res = state in env.monitor_states
 
+    needs_grace = _needs_gracetime(local_state, res)
+    res = res or needs_grace
+
     return (
         res,
-        reason,
+        reason + (" (gracetime)" if needs_grace else ""),
         None,
     )
 
 
 def _needs_maint_by_svc(
-    lq_api: LqAPI, rest_api: RestAPI
+    lq_api: LqAPI,
+    rest_api: RestAPI,
+    local_state: LocalState,
 ) -> Tuple[bool, str, Optional[Iterable[Downtime]]]:
 
     curr_dts: Optional[Iterable[Downtime]] = None
@@ -588,10 +648,92 @@ def _needs_maint_by_svc(
     elif env.monitor_host and env.monitor_svc_regex:
         reason = "Plugin-output"
         # LqlCheckMaintenanceState = "GET services\nFilter: host_name ~ ^" + monitor_host + "$\nFilter: display_name ~ ^" + monitor_service + "$\nFilter: plugin_output ~ " + monitor_service_regex + "\nColumns: host_name\n"
-        hosts_with_active_maint = rest_api.find_hosts_having_a_service(
-            env.monitor_host, env.monitor_svc, env.monitor_svc_regex
+        srch_res = rest_api.find_hosts_having_a_service(
+            env.monitor_host,
+            env.monitor_svc,
+            env.monitor_svc_regex,
+            env.perfname_start is not None,
         )
+        hosts_with_active_maint = []
+        preg: Pattern = None
+
+        if (
+            env.perfname_start is None
+            and env.monitor_svc_regex.find("<START>") >= 0
+            and env.monitor_svc_regex.find("<END>") >= 0
+        ):
+            preg = re.compile(env.monitor_svc_regex)
+
+        for hn, plugin_output, perfdata in srch_res:
+            if env.perfname_start:
+                start, end, dt = _extract_from_perfdata(perfdata)
+                if not dt or not start:
+                    continue
+
+                startdt = datetime.datetime.fromtimestamp(start)
+                enddt = datetime.datetime.fromtimestamp(end)
+                dbg(f"... found {startdt} {start}, {enddt} {end}")
+                if not (
+                    # Add hardcoded gracetime of 10 minutes now.
+                    # Gracetime should check-intervals, callhome-transmits, timeoffset between servers.
+                    # We don't access service-checktimeout, since we don't load this infos only when maint
+                    # is active at a later stage only.
+                    (
+                        startdt - datetime.timedelta(seconds=600)
+                        <= datetime.datetime.now()
+                    )
+                    and (
+                        enddt + datetime.timedelta(seconds=600)
+                        >= datetime.datetime.now()
+                    )
+                ):
+                    dbg("... out of planned maintenance time")
+                    continue
+
+                reason = "Plugin-output with time-perfdata"
+
+            elif preg:
+                dbg("Try finding start/end time im svc output")
+                matches = preg.match(plugin_output)
+                if not matches:
+                    dbg("... no match")
+                    continue
+                start = matches.groupdict().get("START")
+                end = matches.groupdict().get("END")
+                try:
+                    startdt = datetime.datetime.fromisoformat(start)
+                    enddt = datetime.datetime.fromisoformat(end)
+                except:
+                    dbg("... could not parse date, skipping")
+                    continue
+                dbg(f"... found {startdt}, {enddt}")
+
+                if not (
+                    # Add hardcoded gracetime of 10 minutes now.
+                    # Gracetime should check-intervals, callhome-transmits, timeoffset between servers.
+                    # We don't access service-checktimeout, since we don't load this infos only when maint
+                    # is active at a later stage only.
+                    (
+                        startdt - datetime.timedelta(seconds=600)
+                        <= datetime.datetime.now()
+                    )
+                    and (
+                        enddt + datetime.timedelta(seconds=600)
+                        >= datetime.datetime.now()
+                    )
+                ):
+                    dbg("... out of planned maintenance time")
+                    continue
+
+                reason = "Plugin-output with time-indication"
+
+            hosts_with_active_maint.append(hn)
+
+        ## endfor
+
         res = len(hosts_with_active_maint) != 0
+
+    ## endif determine hosts_with_active_maint TODO: split up those blocks
 
     if not res and len(env.monitor_states) > 0:
         reason = "State"
@@ -606,20 +748,23 @@ def _needs_maint_by_svc(
         if state is not None:
             res = state in env.monitor_states
 
-    return (res, reason, curr_dts)
+    needs_grace = _needs_gracetime(local_state, res)
+    res = res or needs_grace
+
+    return (res, reason + (" (gracetime)" if needs_grace else ""), curr_dts)
 
 
 def _needs_maintenance(
-    lq_api: LqAPI, rest_api: RestAPI, maintenance_by: str
+    lq_api: LqAPI, rest_api: RestAPI, local_state: LocalState, maintenance_by: str
 ) -> Tuple[bool, str, Optional[Iterable[Downtime]]]:
     #
     # Determine if we need to set a downtime
     #
     if maintenance_by == "host":
-        return _needs_maint_by_host(lq_api, rest_api)
+        return _needs_maint_by_host(lq_api, rest_api, local_state)
 
     elif maintenance_by == "service":
-        return _needs_maint_by_svc(lq_api, rest_api)
+        return _needs_maint_by_svc(lq_api, rest_api, local_state)
 
 
 def main():
@@ -651,7 +796,7 @@ def main():
     # This call checks if we need a maintenance. If it needed to load
     # Downtimes via RESTAPI it returns those as well for furhter usage (optimization)
     maintenance, maint_reason, curr_dts = _needs_maintenance(
-        lq_api, rest_api, maintenance_by
+        lq_api, rest_api, local_state, maintenance_by
     )
 
     #
@@ -767,7 +912,8 @@ def main():
         add_targets = []
         remove_old = False
         for host_svc_entry in reversed(list(set(host_svc_list))):
-            if host_svc_entry[0] not in ["add", "readd"]:
+            mode = host_svc_entry[0]
+            if mode not in ["add", "readd"]:
                 continue
 
             s = host_svc_entry[2]
@@ -776,11 +922,11 @@ def main():
             else:
                 add_targets.append((host_svc_entry[1], None))
 
-            remove_old = remove_old or host_svc_entry[0] == "readd"
+            remove_old = remove_old or mode == "readd"
         if add_targets:
             Downtimes.add_all(rest_api, add_targets, "(re)add", remove_old)
 
-        # Process other entries/update stats
+        # Process other entries/update statistics
         for host_svc_entry in reversed(list(set(host_svc_list))):
             if host_svc_entry[0] in ["add", "readd"]:
                 # Already done in batch-op above, count only

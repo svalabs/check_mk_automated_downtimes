@@ -167,7 +167,8 @@ class Env:
     strip_fqdn = False
     hostname_boundary_match = True
 
-    default_downtime = 30
+    default_downtime = 30       # This is in minutes
+    dt_end_gracetime_s = 0      # This is in seconds
 
     dependency_detection = None
     manual_targets = tuple()
@@ -190,6 +191,10 @@ class Env:
     automation_user = "automation"
     automation_secret = None
     no_match_msg_tag = "***"  # "(!)"
+
+    perfname_start = None
+    perfname_end = None
+    perfname_set_dt = None
 
     cmd_line_hash = "NONE"
 
@@ -226,7 +231,8 @@ def show_config_dump(env: Env):
     dbg("  Verify SSL: %s" % (env.verify_ssl))
     dbg("  Automation user: %s" % (env.automation_user))
     dbg("  Automation secret: %s" % (env.automation_secret))
-    dbg("  Default downtime: %s" % (env.default_downtime))
+    dbg("  Default downtime: %s min" % (env.default_downtime))
+    dbg("  DT End Gracetime: %s s" % (env.dt_end_gracetime_s))
     dbg("  My Hostname: %s" % (env.my_host_name))
     dbg("  My Service (service display name): %s" % (env.my_svc_name))
     dbg("  Dependency detection: %s" % (env.dependency_detection))
@@ -239,9 +245,9 @@ def show_config_dump(env: Env):
     dbg("  Monitor act on downtime: %s" % (env.monitor_dts))
     dbg(f"  Monitor act on states: {env.monitor_states}")
     dbg("  Optional identifier: %s" % (env.optional_identifier))
-    dbg("  Manual targest: %s" % (str(env.manual_targets)))
+    dbg("  Manual targest: %s" % (str(env.manual_targets)))    
     dbg(f"  CmdLine-Hash: {env.cmd_line_hash}")
-
+    dbg(f"  Perfnames: {env.perfname_start}, {env.perfname_end}, {env.perfname_set_dt}")
 
 def parse_args(version: str = "") -> Env:
 
@@ -269,6 +275,14 @@ def parse_args(version: str = "") -> Env:
         default=env.default_downtime,
         help="Set downtime-length in minutes. If downtime is nearing expiry, it will be renewed",
     )
+
+    parser.add_argument(
+        "--dt_end_gracetime_s",
+        type=int,
+        default=env.dt_end_gracetime_s,
+        help="Set Gracetime in seconds. If prerequesites for a downtime are now longer met, the downtime will be removed after this time (instead of immediately)",
+    )
+
     parser.add_argument(
         "--display_service_name",
         type=str,
@@ -397,6 +411,28 @@ def parse_args(version: str = "") -> Env:
         help="Ignore proxies",
     )
 
+    parser.add_argument(
+        "--perfname_start",
+        type=str,
+        default=None,
+        help="For checking serviceoutput: Use pervalue containing timestamps for triggering downtimes",
+    )
+
+    parser.add_argument(
+        "--perfname_end",
+        type=str,
+        default=None,
+        help="For checking serviceoutput: Use perfvalue containing timestamps for triggering downtimes",
+    )
+
+    parser.add_argument(
+        "--perfname_set_dt",
+        type=str,
+        default=None,
+        help="For checking serviceoutput: Use perfvalue containing 0 or 1 to enable setting downtimes when current time is in start/end timestamps",
+    )
+
+
     try:
         args = parser.parse_args()
     except argparse.ArgumentError as ex:
@@ -409,6 +445,7 @@ def parse_args(version: str = "") -> Env:
     env.hostname_boundary_match = not args.no_hostname_boundary_match
     env.case_insensitive = args.case_insensitive
     env.default_downtime = args.default_downtime
+    env.dt_end_gracetime_s = args.dt_end_gracetime_s
     env.my_svc_name = args.display_service_name
     env.my_host_name = args.host_name
     env.monitor_host = args.monitor_host
@@ -440,6 +477,16 @@ def parse_args(version: str = "") -> Env:
     env.omd_port = args.omd_port
     env.verify_ssl = args.verify_ssl
     env.no_proxy = args.no_proxy
+
+    env.perfname_start = args.perfname_start
+    env.perfname_end = args.perfname_end
+    env.perfname_set_dt = args.perfname_set_dt
+
+    if (env.perfname_start is not None) != (env.perfname_end is not None):
+        print(f"--perfname_start and --perfname_end must be both either set or unset")
+        sys.exit(NAGRES_CRASH)  
+
+
     env.automation_secret = _read_automation_secret(env)
     env.cmd_line_hash = hashlib.sha224(f"{args}".encode("utf-8")).hexdigest()
 
