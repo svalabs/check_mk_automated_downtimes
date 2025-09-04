@@ -543,20 +543,20 @@ class RestAPI:
         resp = self._get("domain-types/host/collections/all", dct)
 
         if resp.status_code == 200:
-            data = resp.json()
-            print("XXXX", data)
+            data = resp.json()            
             if "value" in data:
                 for dct in data["value"]:
                     nam = dct.get("extensions", {}).get("name")
                     dnam = dct.get("extensions", {}).get("display_name")
                     childs = dct.get("extensions", {}).get("childs", [])
                     parents = dct.get("extensions", {}).get("parents", [])
+                    labels = dct.get("extensions", {}).get("labels", {})                    
                     site = (
-                        dct.get("extensions", {}).get("labels", {}).get("cmk/site", "")
+                        labels.get("cmk/site", "")
                     )
                     if nam and dnam and site:
                         hid = HostId(nam, dnam, site)
-                        res.append(HostInfo(hid, parents, [], childs))
+                        res.append(HostInfo(hid, parents, [], childs, labels))
             else:
                 self._raise_error("get_hosts invalid response", resp)
         else:

@@ -15,6 +15,10 @@ See exchange.checkmk.com
 
 ### Changes
 
+- 2.4.5:
+  - !*Consider this version as Beta*!
+  - Fixes in server-side-calls + rule-migration
+  - Support "hl:" in host-regex-field for manuel target-selection: With this prefix  host-labels instead hostnames are used for search
 - 2.4.0:
   - !*Consider this version as Beta*!
   - Screenshot your rules before updating CMK

@@ -52,7 +52,7 @@ API_GROUP = DictGroup(title=Title("API access"))
 def _migrate(dct: Dict) -> Dict:
 
     #logging.critical(f"   IN {dct}")
-    
+        
     monitor = dct.get("monitor")    
     if isinstance(monitor, str):
         dct["monitor"] = ("host", monitor)
@@ -377,8 +377,8 @@ def _detection_mode_manual_sub_form() -> CascadingSingleChoiceElement[str]:
                             elements={
                                 "target_id": DictElement(
                                     parameter_form=String(
-                                        title=Title("Target id"),
-                                        help_text=Help("Just a name/info for the user"),
+                                        title=Title("Target Label"),
+                                        help_text=Help("Just a name/info for the user. e.g 'Search for host xyz' or 'Search via label abc'"),
                                     ),
                                     required=True,
                                 ),
@@ -386,6 +386,14 @@ def _detection_mode_manual_sub_form() -> CascadingSingleChoiceElement[str]:
                                     parameter_form=RegularExpression(
                                         predefined_help_text=MatchingScope.INFIX,
                                         title=Title("Host name regex"),
+                                        help_text=Help(
+                                            """Regex to match hostnames. 
+                                               <br>
+                                               <br>
+                                               Prefix with <tt>hl:</tt> to match against host labels, e.g. <tt>my/nl:100[1-4]</tt> (does not work together with service name regex!).
+                                               Labels will be resolved a list of hosts on cache-update.
+                                            """
+                                        ),
                                     ),
                                     required=True,
                                 ),
@@ -522,7 +530,7 @@ def _form_auto_downtimes() -> Dictionary:
     Automatically set downtimes on hosts/services based on the downtime, state, or output of other hosts/services.<br><br>
     Most input fields (hostnames, service names, display names) support macros.<br><br>
     You can also use regex replacements in these fields, e.g.:<br>
-    'Tunnel {{$HOSTNAME$~~([0-9]).*~~\\1}}'<br>
+    'Tunnel {{$HOSTNAME$~~([0-9+]).*~~\\1}}'<br>
     Format: 'Text~~Regex w/ capture-groups~~Result \\1 \\2 ...' (\\1, \\2, etc. contain contents of capture groups).
     <br><br>
     Enable inline help for more information on the individual fields!

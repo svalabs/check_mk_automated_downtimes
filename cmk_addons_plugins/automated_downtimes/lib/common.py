@@ -28,7 +28,7 @@ import hashlib
 
 import cmk.utils.password_store
 
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Mapping
 from dataclasses import dataclass
 
 #
@@ -123,6 +123,7 @@ class HostInfo:
     parents: Iterable[str]
     svcs: Iterable[str]
     childs: Iterable[str]
+    labels: Mapping[str, str]
 
 
 @dataclass

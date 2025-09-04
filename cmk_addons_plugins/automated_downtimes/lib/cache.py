@@ -102,6 +102,7 @@ class CacheData:
     hosts_by_alias: Dict[str, HostInfo]
     hosts_by_id_insens: Dict[str, Iterable[str]]
     hosts_by_alias_insens: Dict[str, Iterable[str]]
+    hosts_by_label: Dict[str, Iterable[str]]
     svcs: Iterable[SvcInfo]
     filetime: Optional[datetime.datetime]
 
@@ -140,23 +141,31 @@ class InfoCache:
         case_insensitive: bool,
     ) -> Iterable[str]:
 
-        # Simulate LQ-behavor
-        if not name_regex.startswith("^"):
-            name_regex = ".*" + name_regex
+       
 
         flags = 0
         if case_insensitive:
             flags = re.IGNORECASE
 
-        re1 = re.compile(name_regex, flags)
-        res = set()
+        res = set()        
 
-        for k, v in self._cache.hosts_by_id.items():
-            if re1.match(k):
-                res.add(k)
+        if name_regex.startswith("hl:"):
+            label_re = name_regex[3:]
+            re1 = re.compile(label_re, flags)
+            for label, hosts in self._cache.hosts_by_label.items():                
+                if re1.match(label):
+                    for h in hosts:
+                        res.add(h)            
+        else:
+            # Simulate LQ-behavor
+            if not name_regex.startswith("^"):
+                name_regex = ".*" + name_regex
+            re1 = re.compile(name_regex, flags)
+            for k, v in self._cache.hosts_by_id.items():
+                if re1.match(k):
+                    res.add(k)
 
         res = list(res)
-        # print("XX", res, name_regex, case_insensitive)
         return res
 
     def find_childs_of_host(
@@ -346,17 +355,23 @@ class InfoCache:
 
                 h_by_name_insens = {}
                 h_by_alias_insens = {}
+                h_by_labels = {}
                 for h in hosts:
                     nam = h.id.name.lower()
                     ali = h.id.alias.lower()
                     h_by_name_insens.setdefault(nam, set()).add(h.id.name)
                     h_by_alias_insens.setdefault(ali, set()).add(h.id.name)
+                    for lbl, val in h.labels.items():
+                        key = f"{lbl}:{val}"
+                        h_by_labels.setdefault(key, set()).add(h.id.name)
+
 
                 self._cache = CacheData(
                     hosts_by_id=h_by_name,
                     hosts_by_alias=h_by_alias,
                     hosts_by_id_insens=h_by_name_insens,
                     hosts_by_alias_insens=h_by_alias_insens,
+                    hosts_by_label=h_by_labels,
                     svcs=svcs,
                     filetime=datetime.datetime.now(datetime.UTC),
                 )

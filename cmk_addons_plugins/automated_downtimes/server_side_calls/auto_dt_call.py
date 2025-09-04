@@ -53,7 +53,12 @@ def collect_macros(hostname: str, ip_lookup: "IPLookup") -> Mapping[str, str]:
         import cmk.base.config as _config
 
         # try:
-        ha = _config.get_config_cache().get_host_attributes(hostname, ip_lookup)
+        try:
+            ha = _config.get_config_cache().get_host_attributes(hostname, ip_lookup)
+        except:
+            # Hacky CMK-2.3-fallback
+            ha = _config.get_config_cache().get_host_attributes(hostname)
+
         hc = _config.get_config_cache().get_host_macros_from_attributes(hostname, ha)
         macros = hc
     except:
@@ -163,7 +168,7 @@ def commands_function(
         args += ["--default_downtime", str(params["default_downtime"])]
 
     if "dt_end_gracetime_s" in params:
-        args += ["--dt_end_gracetime_s", params["dt_end_gracetime_s"]]
+        args += ["--dt_end_gracetime_s", str(params["dt_end_gracetime_s"])]
 
     if params.get("debug_log"):
         args += ["--debug_log"]
@@ -229,15 +234,20 @@ def commands_function(
         args += ["--dependency_detection", detect_mode]
 
         # Pass extra params depending on main mode
-        if detect_mode == "fully_automated":
-            if prm := detect_prm.get("optional_identifier"):
+        if detect_mode == "fully_automated":            
+            if isinstance(detect_prm, str): # Legacy definition, remove in 2026
+                prm = detect_prm
+            else:
+               prm = detect_prm.get("optional_identifier")
+
+            if prm:
                 args += ["--optional_identifier", replace_macros(macros, prm)]
 
         # elif detect_mode == "search_parent_child":
         #     if detect_prm:
         #         args += ["--optional_identifier", replace_macros(macros, detect_prm)]
 
-        elif detect_mode == "specify_targets":
+        elif detect_mode == "specify_targets":            
             for scope in detect_prm.get("targets", []):
                 target_name = replace_macros(macros, scope.get("target_id"))
                 target_host = replace_macros(macros, scope.get("host_name_regex"))
