@@ -16,14 +16,14 @@ See exchange.checkmk.com
 ### Changes
 
 - 2.4.5:
-  - !*Consider this version as Beta*!
-  - Fixes in server-side-calls + rule-migration
+ - Fixes in server-side-calls + rule-migration
   - Support "hl:" in host-regex-field for manuel target-selection: With this prefix  host-labels instead hostnames are used for search
+
 - 2.4.0:
   - !*Consider this version as Beta*!
   - Screenshot your rules before updating CMK
   - Support for CMK 2.3+ API, tested on CMK 2.4. 
-  - If plugin is installed/updated after CMK-Update resave the rules (or run cmk-update-config again)
+  - If plugin is installed/updated afteri a CMK-Update resave the rules (or run `cmk-update-config` again)
 
 - 2.0.8:
   - Improve support for macros, also on RAW-Editions. 
