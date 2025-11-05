@@ -52,6 +52,10 @@ def collect_macros(hostname: str, ip_lookup: "IPLookup") -> Mapping[str, str]:
     try:
         import cmk.base.config as _config
 
+        #
+        # TODO: can this be fully replaced by host_config.macros ?
+        #
+
         # try:
         try:
             ha = _config.get_config_cache().get_host_attributes(hostname, ip_lookup)
@@ -65,7 +69,7 @@ def collect_macros(hostname: str, ip_lookup: "IPLookup") -> Mapping[str, str]:
         traceback.print_exc()
         print("Error fetching host-attributes")
 
-    # print(macros)
+    #print(macros)
     return macros
 
 
@@ -195,7 +199,7 @@ def commands_function(
                     replace_macros(macros, service_name),
                 ]
 
-            if monitor_service_regex := dct.get("monitor_service_regex"):
+            if monitor_service_regex := dct.get("service_output_regex"):
                 args += [
                     "--monitor_service_regex",
                     replace_macros(macros, monitor_service_regex),

@@ -302,27 +302,31 @@ def _react_on_sub_form() -> Dictionary:
         ),
         elements={
             "monitor_dts": DictElement(
-                parameter_form=BooleanChoice(
+                required=True,
+                parameter_form=BooleanChoice(                    
                     title=Title("downtimes + output matches"),
                     label=Label("Enable"),
                     prefill=DefaultValue(True),
                 ),
             ),
             "monitor_state_1": DictElement(
-                parameter_form=BooleanChoice(
+                required=True,
+                parameter_form=BooleanChoice(                    
                     title=Title("state WARN/DOWN"),
                     label=Label("Enable"),
                     prefill=DefaultValue(False),
                 ),
             ),
             "monitor_state_2": DictElement(
-                parameter_form=BooleanChoice(
+                required=True,
+                parameter_form=BooleanChoice(                    
                     title=Title("state CRIT/UNREACH"),
                     label=Label("Enable"),
                     prefill=DefaultValue(False),
                 ),
             ),
             "monitor_state_3": DictElement(
+                required=True,
                 parameter_form=BooleanChoice(
                     title=Title("state UNKNOWN"),
                     label=Label("Enable"),
