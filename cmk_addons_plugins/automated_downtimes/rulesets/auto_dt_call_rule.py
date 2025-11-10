@@ -51,7 +51,7 @@ API_GROUP = DictGroup(title=Title("API access"))
 
 def _migrate(dct: Dict) -> Dict:
 
-    #logging.critical(f"   IN {dct}")
+    logging.critical(f"   IN {dct}")
         
     monitor = dct.get("monitor")    
     if isinstance(monitor, str):
@@ -63,7 +63,7 @@ def _migrate(dct: Dict) -> Dict:
             "service_name": monitor[1],
             "service_output_regex": monitor[2],                       
         }        
-        if len(monitor[3]) > 0:
+        if isinstance(monitor[3], tuple) and len(monitor[3]) > 0:
              use_perfdata = monitor[3]
              if "timerange" in use_perfdata:
                 new_vals["use_perfadata"] =  {
@@ -96,7 +96,7 @@ def _migrate(dct: Dict) -> Dict:
             dct["dependency_detection"] = ("specify_targets", new_vals)
 
     connect_to = dct.get("connect_to")
-    if isinstance(connect_to, tuple) and len(connect_to > 0):
+    if isinstance(connect_to, tuple) and len(connect_to) > 0:
         new_vals = {
             "host": connect_to[0],
             "port": connect_to[1],
