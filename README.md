@@ -2,6 +2,11 @@
 
 | ActiveCheck-Plugin for automatically setting downtimes on host/services based on other hosts/service.
 
+
+If reinstalling the MKP again after a CMK 2.4 update, be sure to re-save existing old rules,
+if this MKP was in use in earlier versions.
+
+
 ### Requirements
 
 - CMK 2.2, 2.3, (2.1 should work but not tested): use plugin version 2.0.x
@@ -15,7 +20,7 @@ See exchange.checkmk.com
 
 ### Changes
 
-- 2.4.5:
+- 2.4.5+:
  - Fixes in server-side-calls + rule-migration
   - Support "hl:" in host-regex-field for manuel target-selection: With this prefix  host-labels instead hostnames are used for search
 
