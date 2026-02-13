@@ -20,6 +20,10 @@ See exchange.checkmk.com
 
 ### Changes
 
+
+- 2.4.9+:
+  - Fixes, Improved cache-rebuilding. Cleanup Ruleset.
+
 - 2.4.5+:
  - Fixes in server-side-calls + rule-migration
   - Support "hl:" in host-regex-field for manuel target-selection: With this prefix  host-labels instead hostnames are used for search

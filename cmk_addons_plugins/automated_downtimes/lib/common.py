@@ -132,6 +132,29 @@ class SvcInfo:
     host: HostId
 
 
+
+def get_load():
+    """Return system load 1min in relation to number of current CPU-cores"""
+    with open("/proc/loadavg", "r") as f:
+        load_parts = f.read().strip().split(" ", 3)
+    
+    load_1 = float(load_parts[0])
+    load_5 = float(load_parts[1])
+    load_15 = float(load_parts[2])
+    
+    # Get number of CPU cores
+    try:
+        cpu_count = os.cpu_count() or 1
+    except:
+        cpu_count = 1
+    
+    # Calculate load per core
+    load_per_core_1 = load_1 / cpu_count
+    load_per_core_5 = load_5 / cpu_count
+    load_per_core_15 = load_15 / cpu_count
+    
+    return load_per_core_1  
+    
 #
 # Utility-functions
 #
@@ -484,9 +507,10 @@ def parse_args(version: str = "") -> Env:
     env.dependency_detection = args.dependency_detection
     env.optional_identifier = args.optional_identifier
     if args.target:
-        # print(args.target)
+        #print(args.target)
         for t in args.target:
             t = t[0]
+            #print(t[0])
             env.manual_targets += ((t.split(",")[0], t.split(",")[1], t.split(",")[2]),)
     env.strip_fqdn = args.strip_fqdn
     env.omd_host = args.omd_host

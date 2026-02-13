@@ -48,7 +48,7 @@ from cmk_addons.plugins.automated_downtimes.lib.lqapi import LqAPI
 from cmk_addons.plugins.automated_downtimes.lib.restapi import RestAPI
 from cmk_addons.plugins.automated_downtimes.lib.cache import LocalState, LocalStateCache, InfoCache
 
-VERSION = "2.0.8-20250204-160356"
+VERSION = "2.4.12-20261302-153254"
 HASH_ID = "check_auto_downtimes"
 
 #
@@ -448,10 +448,29 @@ def do_exit(exit_code: int) -> None:
 
 # }}}
 
+def _ensure_valid_info_cache(rest_api: RestAPI) -> Tuple[datetime.datetime, int]:
+    glob_ft, glob_age, expired = InfoCache.get_cache_file_time()
+    dbg(f"Global cache age: {glob_age}, expired: {expired}")
+    if expired:
+        dbg("Global cache expired, trying to reload...")
+        cache = InfoCache(rest_api)
+        if not cache.load():
+            result_set_summary("Can't load cache, being updated elsewhere?")
+            do_exit(0)
+
+    glob_ft, glob_age, expired = InfoCache.get_cache_file_time()
+    if expired:
+        result_set_summary("Cache still invalid, giving up")
+        do_exit(1)
+
+    return glob_ft, glob_age
+
+
 
 def _ensure_tgt_list(rest_api: RestAPI, lost: LocalState, maintenance_by: str):
 
     if lost.tgt_list is None:
+        _ensure_valid_info_cache(rest_api)
         cache = InfoCache(rest_api)
         if not cache.load():
             result_set_summary("Can't load cache, being updated elsewhere?")
@@ -471,13 +490,10 @@ def _ensure_tgt_list(rest_api: RestAPI, lost: LocalState, maintenance_by: str):
     return tgt_list
 
 
-def _get_local_state(lq_api: LqAPI):
-    glob_ft, glob_age, expired = InfoCache.get_cache_file_time()
-    dbg(f"Global cache age: {glob_age}, expired: {expired}")
-
+def _get_local_state(lq_api: LqAPI, glob_ft: datetime.datetime, glob_age: int):   
     lost, age = LocalStateCache.load(
         env.get_my_name(),
-        glob_ft if not expired else None,
+        glob_ft,
         env.default_downtime,
         env.cmd_line_hash,
     )
@@ -506,7 +522,7 @@ def _get_local_state(lq_api: LqAPI):
         % (env.my_svc_name, lost.normal_check_interval)
     )
 
-    return lost, glob_age, age
+    return lost, age
 
 
 def _extract_from_perfdata(perfdata: str) -> Tuple[Optional[int], Optional[int], bool]:
@@ -792,7 +808,8 @@ def main():
         # lq=None,
     )
 
-    local_state, glob_state_age, lo_state_age = _get_local_state(lq_api)
+    glob_state_ft, glob_state_age = _ensure_valid_info_cache(rest_api)
+    local_state, lo_state_age = _get_local_state(lq_api, glob_state_ft, glob_state_age)
     tgt_list = _ensure_tgt_list(rest_api, local_state, maintenance_by)
 
     # This call checks if we need a maintenance. If it needed to load

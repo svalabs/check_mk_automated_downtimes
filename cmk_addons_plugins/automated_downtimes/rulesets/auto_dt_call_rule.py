@@ -44,51 +44,49 @@ from cmk.rulesets.v1.form_specs.validators import NumberInRange
 
 import logging
 
-MONITOR_GROUP = DictGroup(title=Title("Monitor"))
-TARGET_GROUP = DictGroup(title=Title("Dependency/Target selection"))
-API_GROUP = DictGroup(title=Title("API access"))
-
-
 def _migrate(dct: Dict) -> Dict:
 
-    logging.critical(f"   IN {dct}")
-        
-    monitor = dct.get("monitor")    
+    # logging.critical(f"   IN {dct}")
+
+    monitor = dct.get("monitor")
     if isinstance(monitor, str):
         dct["monitor"] = ("host", monitor)
-        
-    elif isinstance(monitor, tuple) and len(monitor) >= 4:        
+
+    elif isinstance(monitor, tuple) and len(monitor) >= 4:
         new_vals = {
             "host_name": monitor[0],
             "service_name": monitor[1],
-            "service_output_regex": monitor[2],                       
-        }        
+            "service_output_regex": monitor[2],
+        }
         if isinstance(monitor[3], tuple) and len(monitor[3]) > 0:
-             use_perfdata = monitor[3]
-             if "timerange" in use_perfdata:
-                new_vals["use_perfadata"] =  {
+            use_perfdata = monitor[3]
+            if "timerange" in use_perfdata:
+                new_vals["use_perfadata"] = {
                     "timerange_start": use_perfdata["timerange"][0],
                     "timerange_end": use_perfdata["timerange"][1],
                     "set_dt_flag": use_perfdata.get("set_dt_flag"),
                 }
         dct["monitor"] = ("service", new_vals)
 
-    dep_detect = dct.get("dependency_detection")        
+    dep_detect = dct.get("dependency_detection")
     if isinstance(dep_detect, tuple) and len(dep_detect) > 1:
         if dep_detect[0] == "fully_automated" and isinstance(dep_detect[1], str):
             # Convert old format to new format
             dct["dependency_detection"] = (
-                "fully_automated", {
+                "fully_automated",
+                {
                     "optional_identifier": dep_detect[1] if len(dep_detect) > 1 else "",
-                }
+                },
             )
-        elif dep_detect[0] == "specify_targets" and isinstance(dep_detect[1], list):            
+        elif dep_detect[0] == "specify_targets" and isinstance(dep_detect[1], list):
             new_vals = {
                 "targets": [
                     {
                         "target_id": target[0],
                         "host_name_regex": target[1][0],
-                        "service_name_regex": target[1][1] if len(target[1]) >= 2 else None,                        
+                        "service_name_regex": (
+                            target[1][1] if len(target[1]) >= 2 else None
+                        ),
                     }
                     for target in dep_detect[1]
                 ]
@@ -106,6 +104,37 @@ def _migrate(dct: Dict) -> Dict:
         }
         dct["connect_to"] = new_vals
 
+    #
+    # Convert to next version
+    #
+    if not "monitor_section" in dct:
+        dct["monitor_section"] = {}
+        for k in ("monitor", "react_on"):
+            if k in dct:
+                dct["monitor_section"][k] = dct.get(k)
+                del dct[k]
+    if not "target_section" in dct:
+        dct["target_section"] = {}
+        for k in (
+            "dependency_detection",
+            "search_opts",
+            "dt_end_gracetime_s",
+            "default_downtime",
+        ):
+            if k in dct:
+                dct["target_section"][k] = dct.get(k)
+                del dct[k]
+
+    if not "connect_section" in dct:
+        dct["connect_section"] = {}
+        for k in (
+            "connect_to",
+            "automation_user",
+            "automation_password",
+        ):
+            if k in dct:
+                dct["connect_section"][k] = dct.get(k)
+                del dct[k]
 
     # ealier updates form reference
     """
@@ -201,8 +230,8 @@ def _migrate(dct: Dict) -> Dict:
         if len(fa) == 3 and fa[0] == "fully_automated":
             dct["dependency_detection"] = (fa[0], fa[2])
     """
-    
-    #logging.critical(f"OUT {dct}")
+
+    # logging.critical(f"OUT {dct}")
     return dct
 
 
@@ -303,7 +332,7 @@ def _react_on_sub_form() -> Dictionary:
         elements={
             "monitor_dts": DictElement(
                 required=True,
-                parameter_form=BooleanChoice(                    
+                parameter_form=BooleanChoice(
                     title=Title("downtimes + output matches"),
                     label=Label("Enable"),
                     prefill=DefaultValue(True),
@@ -311,7 +340,7 @@ def _react_on_sub_form() -> Dictionary:
             ),
             "monitor_state_1": DictElement(
                 required=True,
-                parameter_form=BooleanChoice(                    
+                parameter_form=BooleanChoice(
                     title=Title("state WARN/DOWN"),
                     label=Label("Enable"),
                     prefill=DefaultValue(False),
@@ -319,7 +348,7 @@ def _react_on_sub_form() -> Dictionary:
             ),
             "monitor_state_2": DictElement(
                 required=True,
-                parameter_form=BooleanChoice(                    
+                parameter_form=BooleanChoice(
                     title=Title("state CRIT/UNREACH"),
                     label=Label("Enable"),
                     prefill=DefaultValue(False),
@@ -382,7 +411,9 @@ def _detection_mode_manual_sub_form() -> CascadingSingleChoiceElement[str]:
                                 "target_id": DictElement(
                                     parameter_form=String(
                                         title=Title("Target Label"),
-                                        help_text=Help("Just a name/info for the user. e.g 'Search for host xyz' or 'Search via label abc'"),
+                                        help_text=Help(
+                                            "Just a name/info for the user. e.g 'Search for host xyz' or 'Search via label abc'"
+                                        ),
                                     ),
                                     required=True,
                                 ),
@@ -487,11 +518,13 @@ def _api_access_sub_form() -> Dictionary:
                         "When using ports in range 5xxx-5999, TLS is automatcally disabled (works only on localhost)"
                     ),
                     prefill=DefaultValue(443),
-                    custom_validate=[NumberInRange(
-                        min_value=1,
-                        max_value=65535,
-                        error_msg="Port must be between 1 and 65535",
-                    )],
+                    custom_validate=[
+                        NumberInRange(
+                            min_value=1,
+                            max_value=65535,
+                            error_msg="Port must be between 1 and 65535",
+                        )
+                    ],
                 ),
                 required=True,
             ),
@@ -505,6 +538,7 @@ def _api_access_sub_form() -> Dictionary:
             "ssl_verify": DictElement(
                 parameter_form=BooleanChoice(
                     title=Title("Verify SSL certificate"),
+                    label=Label("Enable"),
                     help_text=Help(
                         "If enabled, the SSL certificate of the host is verified. "
                         "This is recommended for production environments. "
@@ -515,11 +549,122 @@ def _api_access_sub_form() -> Dictionary:
             "disable_proxies": DictElement(
                 parameter_form=BooleanChoice(
                     title=Title("Disable use of system proxies"),
+                    label=Label("Disable"),
                     help_text=Help(
                         "Do not use proxies defined e.g. via proxy-env-vars"
                     ),
                     prefill=DefaultValue(False),
                 ),
+            ),
+        },
+    )
+
+
+def _subform_monitor() -> Dictionary:
+    return Dictionary(
+        title=Title("<<< Monitor options >>>"),
+        help_text=Help(
+            "Define the host/service/... to monitor. Downtimes will be set based on the state of these entities or their output."
+        ),
+        elements={
+            "monitor": DictElement(
+                parameter_form=CascadingSingleChoice(
+                    title=Title("Host/services to monitor"),
+                    elements=[_monitor_host_sub_form(), _monitor_service_sub_form()],
+                ),
+                required=True,
+            ),
+            "react_on": DictElement(
+                parameter_form=_react_on_sub_form(),
+            ),
+        },
+    )
+
+
+def _subform_target() -> Dictionary:
+    return Dictionary(
+        title=Title("<<< Dependency/Target selection >>>"),
+        help_text=Help(
+            "Define how the dependencies/targets for setting downtimes are selected. In fully automated mode, dependencies are automatically selected based on the name of the monitored host/service + parent/child-dependencies. In manual mode, dependencies can be defined via regexes to match host and service names or host labels."
+        ),
+        elements={
+            "dependency_detection": DictElement(
+                parameter_form=CascadingSingleChoice(
+                    title=Title("Mode for finding downtime targets"),
+                    elements=[
+                        _detection_mode_fully_automated_sub_form(),
+                        _detection_mode_manual_sub_form(),
+                    ],
+                ),
+                required=True,
+            ),
+            "search_opts": DictElement(
+                parameter_form=_search_opts_sub_form(),
+            ),
+            "dt_end_gracetime_s": DictElement(
+                parameter_form=Integer(
+                    title=Title("Grace time in seconds before downtime removal"),
+                    help_text=Help(
+                        "If prequisite for a downtimes are not met anymore, the downtime will be removed after this time (instead of immediately)."
+                    ),
+                    custom_validate=[
+                        NumberInRange(
+                            min_value=0,
+                            max_value=3600,
+                            error_msg="Grace time must be between 0 and 3600 seconds",
+                        )
+                    ],
+                    prefill=DefaultValue(0),
+                    unit_symbol="s",
+                ),
+            ),
+            "default_downtime": DictElement(
+                parameter_form=Integer(
+                    title=Title("Default downtime in minutes"),
+                    help_text=Help(
+                        "Normal length of downtime, should be min. 2.5x normal check interval. Downtimes are removed earlier, if the prequisite for a downtime are not met anymore and renewed if still required. Something between 30-90 minutes is recommended to redunce the number of downtime-prolongations. This is bascially a failsafe if the plugin gets disabled for some reasons, so the downtimes will expires by themselves after this time. "
+                    ),
+                    custom_validate=[
+                        NumberInRange(
+                            min_value=3,
+                            max_value=1440,
+                            error_msg="Downtime must be between 0 and 1440 minutes",
+                        )
+                    ],
+                    prefill=DefaultValue(0),
+                    unit_symbol="min",
+                ),
+            ),
+        },
+    )
+
+
+def _subform_connect_to() -> Dictionary:
+    return Dictionary(
+        title=Title("<<< API Settings >>>"),
+        elements={
+            "connect_to": DictElement(
+                parameter_form=_api_access_sub_form(),
+                required=False,
+            ),
+            "automation_user": DictElement(
+                parameter_form=String(
+                    title=Title("Automation user"),
+                    help_text=Help(
+                        "User to use for API access. This user must have the Read-All+Adding/Removing Downtime permission on the central site."
+                    ),
+                    prefill=DefaultValue("automation"),
+                ),
+                required=True,
+            ),
+            "automation_password": DictElement(
+                parameter_form=Password(
+                    title=Title("Automation user password"),
+                    help_text=Help(
+                        "If unspecified, user must have the 'automation.secret'-file as in CMK < 2.4.0 was by  default."
+                    ),
+                ),
+                required=False,
             ),
         },
     )
@@ -550,90 +695,17 @@ def _form_auto_downtimes() -> Dictionary:
                 ),
                 required=True,
             ),
-            "monitor": DictElement(
-                parameter_form=CascadingSingleChoice(
-                    title=Title("Host/services to monitor"),
-                    elements=[_monitor_host_sub_form(), _monitor_service_sub_form()],
-                ),
+            "monitor_section": DictElement(
                 required=True,
-                group=MONITOR_GROUP,
+                parameter_form=_subform_monitor(),
             ),
-            "react_on": DictElement(
-                parameter_form=_react_on_sub_form(),
-                group=MONITOR_GROUP,
-            ),
-            "dependency_detection": DictElement(
-                parameter_form=CascadingSingleChoice(
-                    title=Title("Mode for finding downtime targets"),
-                    elements=[
-                        _detection_mode_fully_automated_sub_form(),
-                        _detection_mode_manual_sub_form(),
-                    ],
-                ),
+            "target_section": DictElement(
                 required=True,
-                group=TARGET_GROUP,
+                parameter_form=_subform_target(),
             ),
-            "search_opts": DictElement(
-                parameter_form=_search_opts_sub_form(),
-                group=TARGET_GROUP,
-            ),
-            "dt_end_gracetime_s": DictElement(
-                parameter_form=Integer(
-                    title=Title("Grace time in seconds before downtime removal"),
-                    help_text=Help(
-                        "If prequisite for a downtimes are not met anymore, the downtime will be removed after this time (instead of immediately)."
-                    ),
-                    custom_validate=[NumberInRange(
-                        min_value=0,
-                        max_value=3600,
-                        error_msg="Grace time must be between 0 and 3600 seconds",
-                    )],
-                    prefill=DefaultValue(0),
-                    unit_symbol="s",
-                ),
-                group=TARGET_GROUP,
-            ),
-            "default_downtime": DictElement(
-                parameter_form=Integer(
-                    title=Title("Default downtime in minutes"),
-                    help_text=Help(
-                        "Normal length of downtime, should be min. 2.5x normal check interval. Downtimes are removed earlier, if the prequisite for a downtime are not met anymore and renewed if still required. Something between 30-90 minutes is recommended to redunce the number of downtime-prolongations. This is bascially a failsafe if the plugin gets disabled for some reasons, so the downtimes will expires by themselves after this time. "
-                    ),
-                    custom_validate=[NumberInRange(
-                        min_value=3,
-                        max_value=1440,
-                        error_msg="Downtime must be between 0 and 1440 minutes",
-                    )],
-                    prefill=DefaultValue(0),
-                    unit_symbol="min",
-                ),
-                group=TARGET_GROUP,
-            ),
-            "connect_to": DictElement(
-                parameter_form=_api_access_sub_form(),
-                group=API_GROUP,
-                required=False,
-            ),
-            "automation_user": DictElement(
-                parameter_form=String(
-                    title=Title("Automation user"),
-                    help_text=Help(
-                        "User to use for API access. This user must have the Read-All+Adding/Removing Downtime permission on the central site."
-                    ),
-                    prefill=DefaultValue("automation"),
-                ),
-                group=API_GROUP,
+            "connect_section": DictElement(
                 required=True,
-            ),
-            "automation_password": DictElement(
-                parameter_form=Password(
-                    title=Title("Automation user password"),
-                    help_text=Help(
-                        "If unspecified, user must have the 'automation.secret'-file as in CMK < 2.4.0 was by  default."
-                    ),
-                ),
-                group=API_GROUP,
-                required=False,
+                parameter_form=_subform_connect_to(),
             ),
             "debug_log": DictElement(
                 parameter_form=BooleanChoice(
@@ -644,7 +716,6 @@ def _form_auto_downtimes() -> Dictionary:
                     label=Label("Enable"),
                     prefill=DefaultValue(False),
                 ),
-                group=API_GROUP,
             ),
         },
     )

@@ -42,6 +42,7 @@ from .common import (
     WORD_BOUND,
     HostInfo,
     SvcInfo,
+    get_load,
 )
 
 
@@ -141,21 +142,19 @@ class InfoCache:
         case_insensitive: bool,
     ) -> Iterable[str]:
 
-       
-
         flags = 0
         if case_insensitive:
             flags = re.IGNORECASE
 
-        res = set()        
+        res = set()
 
         if name_regex.startswith("hl:"):
             label_re = name_regex[3:]
             re1 = re.compile(label_re, flags)
-            for label, hosts in self._cache.hosts_by_label.items():                
+            for label, hosts in self._cache.hosts_by_label.items():
                 if re1.match(label):
                     for h in hosts:
-                        res.add(h)            
+                        res.add(h)
         else:
             # Simulate LQ-behavor
             if not name_regex.startswith("^"):
@@ -301,7 +300,9 @@ class InfoCache:
     @staticmethod
     def get_cache_file_time() -> Tuple[Optional[datetime.datetime], Optional[int]]:
         try:
-            ft = datetime.datetime.fromtimestamp(os.path.getmtime(InfoCache.path), tz=datetime.UTC)
+            ft = datetime.datetime.fromtimestamp(
+                os.path.getmtime(InfoCache.path), tz=datetime.UTC
+            )
             age = (datetime.datetime.now(tz=datetime.UTC) - ft).total_seconds()
             expired = age >= 60 * MAX_CACHE_AGE_MINUTES
             # expired = True
@@ -314,10 +315,11 @@ class InfoCache:
         try:
             if os.path.exists(fn):
                 cache_file_time = datetime.datetime.fromtimestamp(
-                    os.path.getmtime(fn),
-                    tz=datetime.UTC
+                    os.path.getmtime(fn), tz=datetime.UTC
                 )
-                age = (datetime.datetime.now(datetime.UTC) - cache_file_time).total_seconds()
+                age = (
+                    datetime.datetime.now(datetime.UTC) - cache_file_time
+                ).total_seconds()
                 if age < 60 * MAX_CACHE_AGE_MINUTES:
                     try:
                         with open(fn, "rb") as f:
@@ -365,7 +367,6 @@ class InfoCache:
                         key = f"{lbl}:{val}"
                         h_by_labels.setdefault(key, set()).add(h.id.name)
 
-
                 self._cache = CacheData(
                     hosts_by_id=h_by_name,
                     hosts_by_alias=h_by_alias,
@@ -407,7 +408,7 @@ class LocalState:
     normal_check_interval: Optional[int] = None
     _short_lived_refresh: Optional[datetime.datetime] = None
     _cfg_hash: Optional[str] = None
-    _last_update_ts: Optional[int] = None    
+    _last_update_ts: Optional[int] = None
 
 
 class LocalStateCache:
@@ -423,44 +424,61 @@ class LocalStateCache:
     @staticmethod
     def load(
         my_name: str,
-        info_cache_file_time: Optional[datetime.datetime],
+        info_cache_file_time: datetime.datetime,
         dt_dur_mins: int,
         cfg_hash: str,
     ) -> Tuple[Optional[LocalState], Optional[int]]:
         path = LocalStateCache._get_path(my_name)
+        ts_path = LocalStateCache._get_path(my_name)+".ts"
 
+        # Force refresh every x minutes, must be newer than info-cache
+        #         
+        # We now require the global cache to be available and valid.
+        # This must be ensured by the caller.
+        #
+        # We try to use 'spead' which is calulated base on instance-id and 
+        # 'skip_global_compar' to prevent load-spikes
+
+        # Spread out cache refresh times a bit
         hash = hashlib.md5(my_name.encode("utf-8"))
-        spread = 6 - int(hash.hexdigest(), 16) % 12
-        dbg(f"State-cache: My spread is {spread}")
+        spread = (
+            9 - int(hash.hexdigest(), 16) % 18
+        )  # Spread refresh times +/- 9 minutes
+        dbg(f"State-cache: My spread is {spread}")            
+
+        # Only test on global-cache-age in 1 of 3 executions
+        # this allows us to use local-caches a bit longer, even global cache
+        # was renewed.
+        # On high load, only 1 of 5 executions
+        sys_load = get_load()
+        load_spread = sys_load > 1.0
+        refresh_chance = 3 if not load_spread else 5
+        skip_global_compar = int(random.random() * 100) % refresh_chance != 0
+        dbg(
+            f"State-cache: Skip Global Compar {skip_global_compar}! chance: {refresh_chance} load: {sys_load}"
+        )
 
         try:
-            if os.path.exists(path) or not info_cache_file_time:
+            if os.path.exists(path) and os.path.exists(ts_path):
                 cache_file_time = datetime.datetime.fromtimestamp(
-                    os.path.getmtime(path), tz=datetime.UTC
+                    os.path.getmtime(ts_path), tz=datetime.UTC
                 )
                 age = (
                     datetime.datetime.now(tz=datetime.UTC) - cache_file_time
                 ).total_seconds()
-                # Force refresh every x minutes, must be newer than info-cache
-                # This age is only a rough estimate, since the
-                # cache usually gets updated on each run with
-                # state date.
-                # Also our cache may be invalid if global-cache-file-time
-                # is None. In this case the global cache was deleted or is expired
-                # In this case we won't use the local cache data, which
-                # triggers a global-cache-load, which then should trigger
-                # a global cache refresh. Not nice...
-                #
-                # We try 2 use 'spead' and 'skip_global_compar' to prevent
-                # load-spikes
+            
+                not_too_old = age < 60 * (MAX_CACHE_AGE_MINUTES + spread)
+                dbg(
+                    f"State-cache: age {age}s, not_too_old: {not_too_old} (max {(MAX_CACHE_AGE_MINUTES + spread)*60}s)"
+                )
+                local_cache_new_than_info_cache = cache_file_time >= info_cache_file_time 
+                dbg(
+                    f"State-cache: cache_file_time {cache_file_time}, info_cache_file_time {info_cache_file_time}, local_cache_new_than_info_cache: {local_cache_new_than_info_cache}"    
+                )
 
-                # only test on global-cache-refresh in 1 of 3 executions
-                skip_global_compar = int(random.random() * 100) % 3 != 0                 
-                dbg(f"State-cache: Skip Global Compar {skip_global_compar}")
-
-                if (age < 60 * (MAX_CACHE_AGE_MINUTES + spread)) and (
-                    info_cache_file_time is not None
-                    and (cache_file_time >= info_cache_file_time or skip_global_compar)
+                # Use cached data if not too old or we give it some grace time
+                if (not_too_old) and (
+                    (skip_global_compar or (local_cache_new_than_info_cache))
                 ):
                     try:
                         with open(path, "rb") as f:
@@ -469,7 +487,9 @@ class LocalStateCache:
                             dbg("State-cache: loaded")
 
                         if data._cfg_hash != cfg_hash:
-                            dbg("State-cache: Cfg-hash does not match. cache no longer valid")
+                            dbg(
+                                "State-cache: Cfg-hash does not match. cache no longer valid"
+                            )
                             return None, None
                         else:
                             dbg("State-cache: Cfg-hash matches")
@@ -482,26 +502,28 @@ class LocalStateCache:
                             ).total_seconds()
                             > (dt_dur_mins / 3) * (MAX_CACHE_AGE_MINUTES + spread)
                         ):
-                            dbg(f"State-cache: Cleared short-lived-data {data._short_lived_refresh}")
+                            dbg(
+                                f"State-cache: Cleared short-lived-data {data._short_lived_refresh}"
+                            )
                             data._short_lived_refresh = datetime.datetime.now(
                                 tz=datetime.UTC
                             )
                             data.normal_check_interval = None
 
-                        if data._last_update_ts is not None:
-                            # Recalc real age now
-                            age = (
-                                datetime.datetime.now(tz=datetime.UTC).timestamp()
-                                - data._last_update_ts
-                            )
-                            if age > (60 * (MAX_CACHE_AGE_MINUTES + spread)):
-                                dbg("State-cache: Data indicates too old, discarding")
-                                return None, None
-                            else:
-                                pass
-                                # dbg(f"State-cache: data is {age}s old")
-                        else:
-                            dbg("State-cache: - no ts in data found, assuming good")
+                        # if data._last_update_ts is not None:
+                        #     # Recalc real age now
+                        #     age = (
+                        #         datetime.datetime.now(tz=datetime.UTC).timestamp()
+                        #         - data._last_update_ts
+                        #     )
+                        #     if age > (60 * (MAX_CACHE_AGE_MINUTES + spread)):
+                        #         dbg("State-cache: Data indicates too old, discarding")
+                        #         return None, None
+                        #     else:
+                        #         pass
+                        #         # dbg(f"State-cache: data is {age}s old")
+                        # else:
+                        #     dbg("State-cache: - no ts in data found, assuming good")
 
                         dbg("State cache: loaded+using")
                         return data, age
@@ -517,10 +539,12 @@ class LocalStateCache:
         except Exception as ex:
             dbg(f"Err while loading state-cache: {ex}. Not using")
             # FIXME: Can also occur when pkl-file does not exists. Line 421?
-            #import traceback
-            #traceback.print_exc()
+            # import traceback
+            # traceback.print_exc()
             pass
 
+        dbg("State-cache: Not using cache, returning None, clearing timestamp file")
+        os.unlink(ts_path) if os.path.exists(ts_path) else None
         return None, None
 
     @staticmethod
@@ -531,10 +555,19 @@ class LocalStateCache:
             dbg("Adding _cfg_hash to localstate")
             local_state._cfg_hash = cfg_hash
         if local_state._last_update_ts is None:
-            local_state._last_update_ts = datetime.datetime.now(tz=datetime.UTC).timestamp()
+            local_state._last_update_ts = datetime.datetime.now(
+                tz=datetime.UTC
+            ).timestamp()
 
         fn = LocalStateCache._get_path(my_name)
+        fn_ts = fn + ".ts"
+
         os.makedirs(os.path.dirname(fn), exist_ok=True)
         with open(fn, "wb") as f:
             pickle.dump(local_state, f)
         dbg("State-cache written to disk")
+
+        if not os.path.exists(fn_ts):
+            with open(fn_ts, "w") as f:
+                f.write("")
+            dbg("State-cache timestamp file written to disk")
