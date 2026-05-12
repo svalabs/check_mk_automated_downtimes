@@ -146,7 +146,7 @@ def commands_function(
     try:
         # Temporayy add support for old params, remove after CMK 2.5
         from cmk_addons.plugins.automated_downtimes.rulesets.auto_dt_call_rule import _migrate
-        params = _migrate(params)   
+        params = _migrate(params)    # type: ignore
     except Exception as e:
         pass
 
@@ -157,7 +157,7 @@ def commands_function(
         ]
     
     if connect_section := params.get("connect_section"):
-        if connect_to := connect_section.get("connect_to"):
+        if connect_to := connect_section.get("connect_to"): # type: ignore
 
             if host := connect_to.get("host"):
                 args += ["--omd_host", host]
@@ -174,23 +174,23 @@ def commands_function(
             if connect_to.get("disable_proxies", False):
                 args += ["--no_proxy"]
 
-        if automation_user := connect_section.get("automation_user"):
+        if automation_user := connect_section.get("automation_user"): # type: ignore
             args += ["--automation_user", automation_user]
 
-        if automation_password := connect_section.get("automation_password"):
+        if automation_password := connect_section.get("automation_password"): # type: ignore
             args += ["--automation_password", automation_password]
 
-        if default_downtime := connect_section.get("default_downtime"):
+        if default_downtime := connect_section.get("default_downtime"): # type: ignore
             args += ["--default_downtime", str(default_downtime)]
 
-        if dt_end_gracetime_s := connect_section.get("dt_end_gracetime_s"):
+        if dt_end_gracetime_s := connect_section.get("dt_end_gracetime_s"): # type: ignore
             args += ["--dt_end_gracetime_s", str(dt_end_gracetime_s)]
 
     if params.get("debug_log"):
         args += ["--debug_log"]
 
     if monitor_section := params.get("monitor_section"):
-        if monitor := monitor_section.get("monitor"):
+        if monitor := monitor_section.get("monitor"): # type: ignore
             if isinstance(monitor, tuple) and len(monitor) > 1 and monitor[0] == "host":
                 args += [
                     "--monitor_host",
@@ -228,7 +228,7 @@ def commands_function(
                     if perf_name_set_dt := use_perfdata.get("set_dt_flag"):
                         args += ["--perfname_set_dt", perf_name_set_dt]
 
-        if react_on := monitor_section.get("react_on"):
+        if react_on := monitor_section.get("react_on"): # type: ignore
             # If unset legacy rule assume we react on downtimes!
             if react_on.get("monitor_dts", True) == False:
                 args += ["--monitor_no_downtimes"]
@@ -245,7 +245,7 @@ def commands_function(
 
     if target_section := params.get("target_section"):
         if "dependency_detection" in target_section:
-            dtup = target_section["dependency_detection"]
+            dtup = target_section["dependency_detection"] # type: ignore
             detect_mode = dtup[0]
             detect_prm = dtup[1] if len(dtup) > 1 else None
 
@@ -257,7 +257,7 @@ def commands_function(
                 if isinstance(detect_prm, str):  # Legacy definition, remove in 2026
                     prm = detect_prm
                 else:
-                    prm = detect_prm.get("optional_identifier")
+                    prm = detect_prm.get("optional_identifier") # type: ignore
 
                 if prm:
                     args += ["--optional_identifier", replace_macros(macros, prm)]
@@ -267,7 +267,7 @@ def commands_function(
             #         args += ["--optional_identifier", replace_macros(macros, detect_prm)]
 
             elif detect_mode == "specify_targets":
-                for scope in detect_prm.get("targets", []):
+                for scope in detect_prm.get("targets", []): # type: ignore
                     target_name = replace_macros(macros, scope.get("target_id"))
                     target_host = replace_macros(macros, scope.get("host_name_regex"))
                     target_service = replace_macros(macros, scope.get("service_name_regex"))
@@ -279,8 +279,20 @@ def commands_function(
                         "--target",
                         "%s,%s,%s" % (target_name, target_host, target_service),
                     ]
+                    # if target_service.strip().startswith("sl:"):
+                    #     # Touch the flag file, experimental
+                    #     from cmk_addons.plugins.automated_downtimes.lib.common import svclb_flag_file, tmp_path
+                    #     import os
+                    #     os.makedirs(tmp_path, exist_ok=True)
+                    #     with open(svclb_flag_file, "w") as f:
+                    #         f.write("1")
 
-            search_opts = target_section.get("search_opts", {})
+                        
+            nf_state = target_section.get("mt_state_no_targets_found") # type: ignore
+            if nf_state is not None:                
+                args += ["--no_target_found_state", str(nf_state)]
+
+            search_opts = target_section.get("search_opts", {}) # type: ignore
             if search_opts.get("hostname_boundary_match") is False:
                 args += ["--no_hostname_boundary_match"]
             if search_opts.get("case_insensitive") is True:
@@ -297,7 +309,7 @@ def commands_function(
 active_check_auto_downtimes = ActiveCheckConfig(
     name="maintenance",
     parameter_parser=noop_parser,
-    commands_function=commands_function,
+    commands_function=commands_function, # type: ignore
 )
 
 # def main():

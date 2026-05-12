@@ -27,7 +27,7 @@ import re
 import sys
 import time
 
-from typing import Iterable, Optional, Tuple, Literal
+from typing import Iterable, Optional, Tuple, Literal, Any
 
 from re import Pattern
 
@@ -81,21 +81,23 @@ class TargetListBuilder:
         self._cache = cache
         # self._rest_api = rest_api Force crash if still used here
         # self._lq_api = lq_api
-        self._result: Tuple[Tuple[str]] = tuple()
+        self._result: Tuple[Tuple[Any]] = tuple() # type: ignore
 
         # self._def_api = self._rest_api
         self._def_api = self._cache
 
-    def add(self, target: Tuple[str]):
+    def add(self, target: Tuple[str, str, str]):
+        
         """Used for manual specified deps"""
         if not target[2]:
             for ch in self._def_api.find_hosts(
                 name_regex=target[1],
                 case_insensitive=self._case_insensitive,
             ):
-                self._result += ((target[0], ch, ""),)
+                self._result += ((target[0], ch, ""),) # type: ignore
 
         else:
+            
             for ch in self._def_api.find_services(
                 name_regex=target[2],
                 host_name_regex=target[1],
@@ -103,7 +105,7 @@ class TargetListBuilder:
                 case_insensitive=self._case_insensitive,
                 boundary_match=False,
             ):
-                self._result += ((target[0], ch[0], ch[1]),)
+                self._result += ((target[0], ch[0], ch[1]),) # type: ignore
 
             # self._result += (target,)
 
@@ -116,8 +118,8 @@ class TargetListBuilder:
             recursive=True,
             case_insensitive=self._case_insensitive,
         ):
-
-            self._result += ((f"Auto-detected child host {ch}", ch, ""),)
+ 
+            self._result += ((f"Auto-detected child host {ch}", ch, ""),) # type: ignore
 
     def add_dependant_services(self, host_name: str, optional_identifier: str):
         hns = host_name if not self._allow_fqdn_strip else try_strip_fqdn(host_name)
@@ -127,7 +129,7 @@ class TargetListBuilder:
             self._case_insensitive,
             self._hostname_boundary_match,
         ):
-            self._result += (("Auto-detected dependent service", hn, svc),)
+            self._result += (("Auto-detected dependent service", hn, svc),) # type: ignore
 
     def add_dependant_services_on_parent(
         self, host_name: str, optional_identifier: str
@@ -141,19 +143,19 @@ class TargetListBuilder:
             pns = parent if not self._allow_fqdn_strip else try_strip_fqdn(parent)
             svc_res = self._def_api.find_services_by_host(pns, optional_identifier)
             for hns, svc_name in svc_res:
-                self._result += (
+                self._result += ( # type: ignore
                     ("Auto-detected dependent service on parent", host_name, svc_name),
-                )
+                ) 
 
     def add_myself(self, host_name: str) -> None:
-        self._result += (("Auto-detected host itself", host_name, ""),)
+        self._result += (("Auto-detected host itself", host_name, ""),) # type: ignore
 
     def add_similar_host_names(self, host_name: str) -> None:
         hns = host_name if not self._allow_fqdn_strip else try_strip_fqdn(host_name)
         for h in self._def_api.find_similar_hosts(
             hns, self._case_insensitive, self._hostname_boundary_match
         ):
-            self._result += (("Similar hostname", h, ""),)
+            self._result += (("Similar hostname", h, ""),) # type: ignore
 
     @staticmethod
     def safe_create(
@@ -172,34 +174,36 @@ class TargetListBuilder:
             cache=info_cache,
         )
         dependency_detection = env.dependency_detection
+        default_not_found_state = 0 # Was inconsitent for the difference detection modes
 
         if dependency_detection == "fully_automated":
             if maintenance_by == "service":
-                tgt_list.add_myself(env.my_host_name)
+                tgt_list.add_myself(env.my_host_name) # type: ignore
 
             dbg("Tgt-FullyAutomated: Adding similar hosts...")
-            tgt_list.add_similar_host_names(env.my_host_name)
+            tgt_list.add_similar_host_names(env.my_host_name) # type: ignore
             dbg("Tgt-FullyAutomated: Add childs from parent...")
-            tgt_list.add_childs_from_parent(env.my_host_name)
+            tgt_list.add_childs_from_parent(env.my_host_name) # type: ignore
             dbg("Tgt-FullyAutomated: Add dependant services...")
-            tgt_list.add_dependant_services(env.my_host_name, env.optional_identifier)
+            tgt_list.add_dependant_services(env.my_host_name, env.optional_identifier) # type: ignore
             if env.my_host_name == env.monitor_host and not env.optional_identifier:
                 env.no_match_msg_tag = ""
 
         elif dependency_detection == "search_parent_child":
-            tgt_list.add_myself(env.my_host_name)
-            tgt_list.add_dependant_services(env.my_host_name, env.optional_identifier)
-            tgt_list.add_childs_from_parent(env.my_host_name)
+            tgt_list.add_myself(env.my_host_name) # type: ignore
+            tgt_list.add_dependant_services(env.my_host_name, env.optional_identifier) # type: ignore
+            tgt_list.add_childs_from_parent(env.my_host_name) # type: ignore
             tgt_list.add_dependant_services_on_parent(
-                env.my_host_name, env.optional_identifier
+                env.my_host_name, env.optional_identifier # type: ignore
             )
 
         elif dependency_detection == "search_child":
-            tgt_list.add_myself(env.my_host_name)
-            tgt_list.add_childs_from_parent(env.my_host_name)
+            tgt_list.add_myself(env.my_host_name) # type: ignore
+            tgt_list.add_childs_from_parent(env.my_host_name) # type: ignore
             # tgt_list.add_dependant_services(env.my_host_name, env.optional_identifier)
 
         elif dependency_detection == "specify_targets":
+            default_not_found_state = 3 # Mimic old behavior
             for m in env.manual_targets:
                 if len(m) < 1 or len(m) > 3:
                     result_set_summary(
@@ -227,15 +231,26 @@ class TargetListBuilder:
                 #         do_exit(NAGRES_CRASH)
                 # tgt_list.add(m)
 
-            if not tgt_list.get():
-                result_set_summary(
-                    "! Manual target list, but no targets defined or no targets found"
-                )
-                do_exit(NAGRES_CRASH)
-
         else:
             result_set_summary("! Invalid mode for --dependency_detection")
             do_exit(NAGRES_CRASH)
+
+        if not tgt_list.get():
+            nf_state = default_not_found_state
+            if env.no_target_found_state is not None:
+                nf_state = env.no_target_found_state
+
+            if nf_state > 0:
+                result_set_summary(
+                    "! Manual target list, but no targets defined or no targets found"
+                )
+                do_exit(nf_state)
+            else:
+                result_set_summary(
+                    "No targets defined or no targets found"
+                )
+                do_exit(NAGRES_OK)
+
 
         dbg("Building targetlist Done")
         dbg(f"Target list updated to: {tgt_list.get()}")
@@ -251,6 +266,7 @@ class TargetListBuilder:
 #
 class Downtimes:
 
+    @staticmethod
     def _create_hash() -> Tuple[str, str]:
         """returns a tuple. 2nd element is currently NOT used"""
 
@@ -261,7 +277,7 @@ class Downtimes:
 
     @staticmethod
     def get_hash():
-        parts = Downtimes._create_hash()
+        parts = Downtimes._create_hash() # type: ignore
         return f"{parts[0]}{parts[1]}"
 
     @staticmethod
@@ -271,7 +287,7 @@ class Downtimes:
         svc_name: Optional[str] = None,
         comment_find: Optional[str] = None,
         dt_type: Literal["H", "S", "*"] = "*",
-    ) -> Iterable[Downtime]:
+    ) -> list[Downtime]:
         """
         return all matching downtimes. to get only service-downtime
         """
@@ -293,59 +309,59 @@ class Downtimes:
         return res
 
     @staticmethod
-    def get_all(api: RestAPI) -> Iterable[Downtime]:
+    def get_all(api: RestAPI) -> Iterable[Downtime]:        
         return api.get_downtimes()
 
-    @staticmethod
-    def add(
-        api: RestAPI,
-        host_name: str,
-        service: Optional[str],
-        task_info: str,
-        replace_existing: bool,
-        curr_dts: Optional[Iterable[Downtime]] = None,
-    ) -> None:
-        """!!! SINGLE Add, should be not longer used !!!"""
+    # @staticmethod
+    # def add(
+    #     api: RestAPI,
+    #     host_name: str,
+    #     service: Optional[str],
+    #     task_info: str,
+    #     replace_existing: bool,
+    #     curr_dts: Optional[Iterable[Downtime]] = None,
+    # ) -> None:
+    #     """!!! SINGLE Add, should be not longer used !!!"""
 
-        dbg(f"{task_info} (host / service: %s  - %s)" % (host_name, service))
-        global default_downtime
+    #     dbg(f"{task_info} (host / service: %s  - %s)" % (host_name, service))
+    #     global default_downtime
 
-        downtime_hash = Downtimes.get_hash(host_name, service)
+    #     downtime_hash = Downtimes.get_hash(host_name, service) # type: ignore
 
-        typ = "Svc" if service else "Host"
-        comment = f"MAINT#{downtime_hash} {typ}-DT (set by rule '{env.my_svc_name}@{env.my_host_name}')"
+    #     typ = "Svc" if service else "Host"
+    #     comment = f"MAINT#{downtime_hash} {typ}-DT (set by rule '{env.my_svc_name}@{env.my_host_name}')"
 
-        to_replace = []
-        # Find exisiting downtimes with id
-        if replace_existing:
-            if curr_dts:
-                dts = Downtimes.find(curr_dts, host_name, service, downtime_hash)
-            else:
-                dts = api.get_downtimes(host_name, service, downtime_hash)
-            for dt in dts:
-                id = dt.id
-                to_replace.append(id)
+    #     to_replace = []
+    #     # Find exisiting downtimes with id
+    #     if replace_existing:
+    #         if curr_dts:
+    #             dts = Downtimes.find(curr_dts, host_name, service, downtime_hash)
+    #         else:
+    #             dts = api.get_downtimes(host_name, service, downtime_hash)
+    #         for dt in dts:
+    #             id = dt.id
+    #             to_replace.append(id)
 
-        if len(to_replace):
-            comment = comment + f" (Replacing {'/'.join(to_replace)})"
+    #     if len(to_replace):
+    #         comment = comment + f" (Replacing {'/'.join(to_replace)})"
 
-        start = datetime.datetime.now()
-        end = start + datetime.timedelta(minutes=default_downtime)
+    #     start = datetime.datetime.now()
+    #     end = start + datetime.timedelta(minutes=default_downtime)
 
-        api.set_downtimes(comment, start, end, [(host_name,)])
+    #     api.set_downtimes(comment, start, end, [(host_name,)])
 
-        if len(to_replace):
-            time.sleep(
-                2
-            )  # CMK will cancel old DT before new is place without delay?????
-            if not api.delete_downtimes(to_replace):
-                outcome = "FAILED!!"
-            else:
-                outcome = "OK"
+    #     if len(to_replace):
+    #         time.sleep(
+    #             2
+    #         )  # CMK will cancel old DT before new is place without delay?????
+    #         if not api.delete_downtimes(to_replace):
+    #             outcome = "FAILED!!"
+    #         else:
+    #             outcome = "OK"
 
-            dbg(
-                f"After adding dt for {downtime_hash}: del pre-existing dt {to_replace} {outcome}"
-            )
+    #         dbg(
+    #             f"After adding dt for {downtime_hash}: del pre-existing dt {to_replace} {outcome}"
+    #         )
 
     @staticmethod
     def add_all(
@@ -354,7 +370,7 @@ class Downtimes:
         task_info: str,
         remove_existing: bool,
     ) -> None:
-        dbg(f"{task_info} (targets: {len(targets)})")
+        dbg(f"{task_info} (targets: {len(targets)})") # type: ignore
 
         ds = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         downtime_hash = Downtimes.get_hash()
@@ -395,7 +411,7 @@ class Downtimes:
     def remove(api: RestAPI, host_name: str, svc_name: str, task_info):
         dbg(f"{task_info} (host / service: %s  - %s)" % (host_name, svc_name))
 
-        downtime_hash = Downtimes.get_hash(host_name, svc_name)
+        downtime_hash = Downtimes.get_hash(host_name, svc_name) # type: ignore
 
         for dt in api.get_downtimes(host_name, svc_name, downtime_hash):
             id = dt.id
@@ -404,7 +420,7 @@ class Downtimes:
 
     @staticmethod
     def remove_all_own(api: RestAPI):
-        my_hash = Downtimes._create_hash()[0]
+        my_hash = Downtimes._create_hash()[0] 
         dbg("Removing all downtimes with my hash: " + my_hash)
 
         api.delete_downtimes_by_keyword("MAINT#" + my_hash)
@@ -449,7 +465,7 @@ def do_exit(exit_code: int) -> None:
 # }}}
 
 def _ensure_valid_info_cache(rest_api: RestAPI) -> Tuple[datetime.datetime, int]:
-    glob_ft, glob_age, expired = InfoCache.get_cache_file_time()
+    glob_ft, glob_age, expired = InfoCache.get_cache_file_time() # type: ignore
     dbg(f"Global cache age: {glob_age}, expired: {expired}")
     if expired:
         dbg("Global cache expired, trying to reload...")
@@ -458,12 +474,12 @@ def _ensure_valid_info_cache(rest_api: RestAPI) -> Tuple[datetime.datetime, int]
             result_set_summary("Can't load cache, being updated elsewhere?")
             do_exit(0)
 
-    glob_ft, glob_age, expired = InfoCache.get_cache_file_time()
+    glob_ft, glob_age, expired = InfoCache.get_cache_file_time() # type: ignore
     if expired:
         result_set_summary("Cache still invalid, giving up")
         do_exit(1)
 
-    return glob_ft, glob_age
+    return glob_ft, glob_age # type: ignore
 
 
 
@@ -502,7 +518,7 @@ def _get_local_state(lq_api: LqAPI, glob_ft: datetime.datetime, glob_age: int):
 
     if lost.normal_check_interval is None:
         normal_check_interval = lq_api.get_service_check_interval(
-            env.my_host_name, env.my_svc_name
+            env.my_host_name, env.my_svc_name # type: ignore
         )
         if not normal_check_interval:
             result_set_summary(
@@ -513,7 +529,7 @@ def _get_local_state(lq_api: LqAPI, glob_ft: datetime.datetime, glob_age: int):
             do_exit(NAGRES_CRASH)
         else:
             normal_check_interval = normal_check_interval * 60
-        lost.normal_check_interval = normal_check_interval
+        lost.normal_check_interval = normal_check_interval # type: ignore
     else:
         dbg("Using cached 'normal-check-interval'")
 
@@ -526,9 +542,9 @@ def _get_local_state(lq_api: LqAPI, glob_ft: datetime.datetime, glob_age: int):
 
 
 def _extract_from_perfdata(perfdata: str) -> Tuple[Optional[int], Optional[int], bool]:
-    start = perfdata.get(env.perfname_start, None)
-    end = perfdata.get(env.perfname_end, None)
-    set_dt = perfdata.get(env.perfname_set_dt, None) if env.perfname_set_dt else True
+    start = perfdata.get(env.perfname_start, None) # type: ignore
+    end = perfdata.get(env.perfname_end, None) # type: ignore
+    set_dt = perfdata.get(env.perfname_set_dt, None) if env.perfname_set_dt else True # type: ignore
 
     if not end:
         end = None
@@ -554,7 +570,7 @@ def _get_maint_by():
             "Config error: 'Monitor host' and/or 'Monitor service' undefined!"
         )
         do_exit(NAGRES_CRASH)
-    return _maintenance_by
+    return _maintenance_by # type: ignore
 
 
 def _needs_gracetime(local_state: LocalState, dt_prereqs_met: bool) -> bool:
@@ -605,12 +621,12 @@ def _needs_maint_by_host(
     if env.monitor_dts:
         reason = "Downtime"
         if env.monitor_host == env.my_host_name:
-            dts = lq_api.get_downtimes(env.monitor_host, None, None)
-            dbg(f"LQ returned DT={len(dts)} on monitored")
-            res = len(dts) > 0
+            dts = lq_api.get_downtimes(env.monitor_host, None, None) # type: ignore
+            dbg(f"LQ returned DT={len(dts)} on monitored") # type: ignore
+            res = len(dts) > 0 # type: ignore
         else:
             curr_dts = Downtimes.get_all(rest_api)
-            for dt in Downtimes.find(curr_dts, host_name=env.monitor_host):
+            for dt in Downtimes.find(curr_dts, host_name=env.monitor_host): # type: ignore
                 dbg("Rest returned DT! on monitored")
                 res = True
                 break
@@ -619,10 +635,10 @@ def _needs_maint_by_host(
         reason = "State"
         state = None
         if env.monitor_host == env.my_host_name:
-            state = lq_api.get_host_state(env.monitor_host)
+            state = lq_api.get_host_state(env.monitor_host) # type: ignore
             dbg(f"LQ returned state {state} on monitored")
         else:
-            state = rest_api.get_host_state(env.my_host_name)
+            state = rest_api.get_host_state(env.my_host_name) # type: ignore
             dbg(f"Rest returned state {state} on monitored")
 
         if state is not None:
@@ -651,13 +667,13 @@ def _needs_maint_by_svc(
     if env.monitor_dts and not env.monitor_svc_regex:
         reason = "Downtime"
         if env.monitor_host == env.my_host_name:
-            dts = lq_api.get_downtimes(env.monitor_host, env.monitor_svc, None)
-            dbg(f"LQ returned DT={len(dts)} on monitored")
+            dts = lq_api.get_downtimes(env.monitor_host, env.monitor_svc, None) # type: ignore
+            dbg(f"LQ returned DT={len(dts)} on monitored") # type: ignore
             res = len(dts) > 0
         else:
             curr_dts = Downtimes.get_all(rest_api)
             for dt in Downtimes.find(
-                curr_dts, host_name=env.monitor_host, svc_name=env.monitor_svc
+                curr_dts, host_name=env.monitor_host, svc_name=env.monitor_svc # type: ignore
             ):
                 dbg("Rest returned DT! on monitored")
                 res = True
@@ -667,20 +683,20 @@ def _needs_maint_by_svc(
         reason = "Plugin-output"
         # LqlCheckMaintenanceState = "GET services\nFilter: host_name ~ ^" + monitor_host + "$\nFilter: display_name ~ ^" + monitor_service + "$\nFilter: plugin_output ~ " + monitor_service_regex + "\nColumns: host_name\n"
         srch_res = rest_api.find_hosts_having_a_service(
-            env.monitor_host,
-            env.monitor_svc,
-            env.monitor_svc_regex,
+            env.monitor_host,  # type: ignore
+            env.monitor_svc,  # type: ignore
+            env.monitor_svc_regex,  # type: ignore
             env.perfname_start is not None,
         )
         hosts_with_active_maint = []
-        preg: Pattern = None
+        preg: Pattern = None  # type: ignore
 
         if (
             env.perfname_start is None
-            and env.monitor_svc_regex.find("<START>") >= 0
-            and env.monitor_svc_regex.find("<END>") >= 0
+            and env.monitor_svc_regex.find("<START>") >= 0  # type: ignore
+            and env.monitor_svc_regex.find("<END>") >= 0  # type: ignore
         ):
-            preg = re.compile(env.monitor_svc_regex)
+            preg = re.compile(env.monitor_svc_regex)  # type: ignore
 
         for hn, plugin_output, perfdata in srch_res:
             if env.perfname_start:
@@ -689,8 +705,8 @@ def _needs_maint_by_svc(
                     continue
 
                 startdt = datetime.datetime.fromtimestamp(start)
-                enddt = datetime.datetime.fromtimestamp(end)
-                dbg(f"... found {startdt} {start}, {enddt} {end}")
+                enddt = datetime.datetime.fromtimestamp(end)  # type: ignore
+                dbg(f"... found {startdt} {start}, {enddt} {end}") 
                 if not (
                     # Add hardcoded gracetime of 10 minutes now.
                     # Gracetime should check-intervals, callhome-transmits, timeoffset between servers.
@@ -719,8 +735,8 @@ def _needs_maint_by_svc(
                 start = matches.groupdict().get("START")
                 end = matches.groupdict().get("END")
                 try:
-                    startdt = datetime.datetime.fromisoformat(start)
-                    enddt = datetime.datetime.fromisoformat(end)
+                    startdt = datetime.datetime.fromisoformat(start)  # type: ignore
+                    enddt = datetime.datetime.fromisoformat(end)  # type: ignore
                 except:
                     dbg("... could not parse date, skipping")
                     continue
@@ -756,11 +772,11 @@ def _needs_maint_by_svc(
     if not res and len(env.monitor_states) > 0:
         reason = "State"
         if env.monitor_host == env.my_host_name:
-            state = lq_api.get_service_state(env.monitor_host, env.monitor_svc)
+            state = lq_api.get_service_state(env.monitor_host, env.monitor_svc)  # type: ignore
             dbg(f"LQ returned state {state} on monitored")
 
         else:
-            state = rest_api.get_service_state(env.monitor_host, env.monitor_svc)
+            state = rest_api.get_service_state(env.monitor_host, env.monitor_svc)  # type: ignore
             dbg(f"Rest returned state {state} on monitored")
 
         if state is not None:
@@ -774,7 +790,7 @@ def _needs_maint_by_svc(
 
 def _needs_maintenance(
     lq_api: LqAPI, rest_api: RestAPI, local_state: LocalState, maintenance_by: str
-) -> Tuple[bool, str, Optional[Iterable[Downtime]]]:
+) -> Tuple[bool, str, Optional[Iterable[Downtime]]]:  # type: ignore
     #
     # Determine if we need to set a downtime
     #
@@ -798,9 +814,9 @@ def main():
 
     rest_api = RestAPI(
         env.omd_host,
-        env.omd_site,
+        env.omd_site,  # type: ignore
         env.automation_user,
-        env.automation_secret,
+        env.automation_secret,  # type: ignore
         port=env.omd_port,
         use_ssl=(env.omd_port < 5000 or env.omd_port > 5999),
         verify_ssl=env.verify_ssl,
@@ -838,11 +854,11 @@ def main():
 
             for target in tgt_list:
                 _ = target[0]
-                target_host = target[1]
-                target_service = target[2]
+                target_host = target[1]  # type: ignore
+                target_service = target[2]  # type: ignore
 
                 dts = Downtimes.find(curr_dts, target_host, target_service, dt_hash)
-                if len(dts) > 0:
+                if len(dts) > 0:  # type: ignore
                     # Now, only used for stats below
                     host_svc_list.append(
                         (
@@ -871,27 +887,27 @@ def main():
         needing_readd = False
         for target in tgt_list:
             _ = target[0]
-            target_host = target[1]
-            target_service = target[2]
+            target_host = target[1]  # type: ignore
+            target_service = target[2]  # type: ignore
 
             dts = Downtimes.find(curr_dts, target_host, target_service, dt_hash)
-            if len(dts) > 1:
+            if len(dts) > 1:  
                 # Multiple DT, something went wrong, don't try to read
                 # but wait for expiry, so we won't have tons on duplicated
                 # downtimes (may be delete didn't work?!)
                 continue
-            elif len(dts) == 1:
-                dt = dts[0]
+            elif len(dts) == 1:  # type: ignore
+                dt = dts[0]  # type: ignore
                 curr_ts = int(round(time.time()))
                 dt_end_ts = datetime.datetime.timestamp(dt.end_time)
-                if curr_ts > dt_end_ts - (local_state.normal_check_interval * 2):
+                if curr_ts > dt_end_ts - (local_state.normal_check_interval * 2):  # type: ignore
                     needing_readd = True
                     break
 
         for target in tgt_list:
             _ = target[0]
-            target_host = target[1]
-            target_service = target[2]
+            target_host = target[1]  # type: ignore
+            target_service = target[2]  # type: ignore
 
             # Check if downtime exists:
             # - if dt with exact hash does not exist, set own
@@ -899,12 +915,12 @@ def main():
             #   check if those dt is sufficent end-time-wise, otherwise readd
             #   in case multiple own dt exist
             dts = Downtimes.find(curr_dts, target_host, target_service, dt_hash)
-            if len(dts) > 1:
+            if len(dts) > 1: 
                 # Multiple DT, something went wrong, don't try to read
                 # but wait for expiry, so we won't have tons on duplicated
                 # downtimes (may be delete didn't work?!)
                 continue
-            elif len(dts) == 1 and needing_readd:
+            elif len(dts) == 1 and needing_readd:  
                 host_svc_list.append(
                     (
                         "readd",
@@ -979,14 +995,14 @@ def main():
         result_add_detail("Affected hosts and services by this rule:")
 
     if tgt_list:
-        for target in tgt_list:
-            if target[2]:
+        for target in tgt_list: 
+            if target[2]:  # type: ignore
                 result_add_detail(
                     "- Service '%s' on host '%s' (%s)"
-                    % (target[2], target[1], target[0])
+                    % (target[2], target[1], target[0])  # type: ignore
                 )
             else:
-                result_add_detail("- Host '%s' (%s)" % (target[1], target[0]))
+                result_add_detail("- Host '%s' (%s)" % (target[1], target[0]))  # type: ignore
     else:
         result_add_detail(
             f"{env.no_match_msg_tag} NOTHING FOUND. Nobody seems to be dependant on this host {env.no_match_msg_tag}"

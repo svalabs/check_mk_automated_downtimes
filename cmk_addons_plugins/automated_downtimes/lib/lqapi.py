@@ -133,7 +133,7 @@ class LqAPI:
         host_name: str,
         service_name: Optional[str] = None,
         filter_comment: Optional[str] = None,
-    ) -> Iterable[Downtime]:
+    ) -> list[Downtime]:
 
         query = (
             f"GET downtimes\n"
@@ -143,7 +143,7 @@ class LqAPI:
 
         data = self._exec(query)
 
-        res: Iterable[Downtime] = []
+        res: list[Downtime] = []
         for entry in data:
             e = entry.split(";")
             ne = Downtime(

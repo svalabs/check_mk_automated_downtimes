@@ -58,7 +58,7 @@ class RestAPI:
         scheme = "http" if not use_ssl else "https"
 
         if not verify_ssl:
-            requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
+            requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning) # type: ignore
 
         self.api_url = f"{scheme}://{host}:{port}/{site}/check_mk/api/1.0"
         self._session = requests.session()
@@ -69,7 +69,7 @@ class RestAPI:
             for p in "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY":
                 if p in os.environ:
                     del os.environ[p]
-            self._session.proxies = {"http": None, "https": None}
+            self._session.proxies = {"http": None, "https": None} # type: ignore
 
     def _get(self, url: str, params: Dict):
         resp = self._session.get(
@@ -95,9 +95,9 @@ class RestAPI:
 
     def _raise_error(self, req_name: str, resp: Union[requests.Response, int]):
         try:
-            code = resp.status_code
+            code = resp.status_code # type: ignore
             if code >= 300:
-                msg = bytes.decode(resp.content, "utf-8")
+                msg = bytes.decode(resp.content, "utf-8") # type: ignore
             else:
                 msg = ""
         except:
@@ -127,7 +127,7 @@ class RestAPI:
 
     def delete_downtimes(self, ids: Iterable[str], no_throw=False) -> bool:
 
-        for c in chunks(ids, MAX_QUERY_BATCH_SIZE):
+        for c in chunks(ids, MAX_QUERY_BATCH_SIZE): # type: ignore
             q = '{"op": "or", "expr": ['
             dlm = ""
             for id in c:
@@ -208,6 +208,8 @@ class RestAPI:
         elif host_name:
             dct["host_name"] = host_name
 
+
+        dbg("Getting all the downtimes via REST :(")
         resp = self._get("domain-types/downtime/collections/all", dct)
 
         res: Iterable[Downtime] = []
@@ -274,7 +276,7 @@ class RestAPI:
             "downtime_type": dt_type,
         }
         if serivce_names:
-            dct["service_descriptions"] = serivce_names
+            dct["service_descriptions"] = serivce_names # type: ignore
 
         resp = self._post(f"domain-types/downtime/collections/{dt_type}", dct)
 
@@ -350,7 +352,7 @@ class RestAPI:
                     self._raise_error("set_downtimes", resp)
 
         # endfor
-        return True
+        return None
 
     #
     # Host seaech
@@ -397,6 +399,7 @@ class RestAPI:
         return list(res)
 
 
+    @staticmethod
     def _parse_perfdata(s: str) -> Dict:
         res = {}
         if s:
@@ -446,7 +449,7 @@ class RestAPI:
                     hn = e.get("extensions", {}).get("host_name", None)
                     plugin_output = e.get("extensions", {}).get("plugin_output", None)
                     perfdata = e.get("extensions", {}).get("perf_data", None) if include_perfdata else None # field 'performance_data' returns a dict!
-                    perfdata = RestAPI._parse_perfdata(perfdata)
+                    perfdata = RestAPI._parse_perfdata(perfdata) # type: ignore
                     #print(perfdata)
                     if hn is None:
                         fail = "No data in response"
@@ -703,10 +706,10 @@ class RestAPI:
         # dbg(f"**REST Services by hostname filter {host_name_regex} / {res}")
         return res
 
-    def get_services(self) -> Iterable[Tuple[str, str]]:
+    def get_services(self) -> Iterable[SvcInfo]:
         res = []
         dct = {}
-        dct["columns"] = ["display_name", "host_name", "host_alias", "host_labels"]
+        dct["columns"] = ["display_name", "host_name", "host_alias", "host_labels", "labels"]
         resp = self._get("domain-types/service/collections/all", dct)
 
         if resp.status_code == 200:
@@ -716,14 +719,15 @@ class RestAPI:
                     nam = e.get("extensions", {}).get("display_name")
                     hnam = e.get("extensions", {}).get("host_name")
                     halias = e.get("extensions", {}).get("host_alias")
+                    labels = e.get("extensions", {}).get("labels", {})
                     site = (
                         e.get("extensions", {})
                         .get("host_labels", {})
                         .get("cmk/site", "")
                     )
                     if nam and hnam and site:
-                        hid = HostId(hnam, halias, site)
-                        res.append(SvcInfo(nam, hid))
+                        hid = HostId(hnam, halias, site) # TODO: Loading host labels just for an ID we may already have loaded!?
+                        res.append(SvcInfo(nam, hid, labels))
         else:
             self._raise_error("get_services", resp)
 

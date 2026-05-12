@@ -21,6 +21,11 @@ See exchange.checkmk.com
 ### Changes
 
 
+- 2.4.16:
+ - Allow configuring service-state if no targets are found
+ - Support `sl:`-Prefix to search services via labels in then Target-Selection. See Inline-help.
+ - Fixes
+
 - 2.4.9+:
   - Fixes, Improved cache-rebuilding. Cleanup Ruleset.
 

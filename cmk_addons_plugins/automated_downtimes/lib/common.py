@@ -35,9 +35,13 @@ from dataclasses import dataclass
 # Basic global vars
 #
 
-omd_root = os.getenv("OMD_ROOT")
-omd_site = os.getenv("OMD_SITE")
+omd_root = os.getenv("OMD_ROOT") or ""
+omd_site = os.getenv("OMD_SITE") or ""
+if not omd_root or not omd_site:
+    raise Exception("OMD_ROOT and OMD_SITE environment variables must be set")    
 
+
+tmp_path = f"{omd_root}/tmp/check_mk/auto_downtimes/"
 
 #
 # Global flags
@@ -66,6 +70,13 @@ WORD_BOUND = "(\\b|_| |$)"
 
 debug = False
 debug_log = False
+
+#
+# FlagFiles
+#
+
+# Not used ATM
+svclb_flag_file = f"{tmp_path}/auto_downtimes_svclb.flag"
 
 
 def dbg(Message):
@@ -99,15 +110,15 @@ def set_dbg(console: bool, log: bool):
 
 @dataclass
 class Downtime:
-    id: str = None
-    title: str = None
-    host_name: str = None
+    id: str 
+    title: str 
+    host_name:  str    
+    start_time: datetime.datetime 
+    end_time: datetime.datetime 
+    author: str 
+    comment: str
     svc_name: Optional[str] = None
     is_svc_dt: bool = False
-    start_time: datetime.datetime = None
-    end_time: datetime.datetime = None
-    author: str = None
-    comment: str = None
 
 
 @dataclass
@@ -130,6 +141,7 @@ class HostInfo:
 class SvcInfo:
     name: str
     host: HostId
+    labels: Mapping[str, str]
 
 
 
@@ -160,7 +172,7 @@ def get_load():
 #
 
 
-def chunks(lst: Iterable, n: int) -> Iterable[Iterable]:
+def chunks(lst: list, n: int) -> Iterable[Iterable]:
     res = [lst[i * n : (i + 1) * n] for i in range((len(lst) + n - 1) // n)]
     return res
 
@@ -198,6 +210,8 @@ class Env:
 
     dependency_detection = None
     manual_targets = tuple()
+    no_target_found_state: Optional[int] = None
+
     optional_identifier = ""
 
     my_host_name = None
@@ -215,7 +229,7 @@ class Env:
     no_proxy = False
     verify_ssl = False
     automation_user = "automation"
-    automation_secret = None
+    automation_secret: str|None = None
     no_match_msg_tag = "***"  # "(!)"
 
     perfname_start = None
@@ -223,6 +237,7 @@ class Env:
     perfname_set_dt = None
 
     cmd_line_hash = "NONE"
+    enable_service_labels = False
 
     def get_my_name(self) -> str:
         return f"{self.my_host_name}--{self.my_svc_name}"
@@ -263,6 +278,8 @@ def show_config_dump(env: Env):
     dbg("  My Service (service display name): %s" % (env.my_svc_name))
     dbg("  Dependency detection: %s" % (env.dependency_detection))
     dbg("  Case-insensitive host search: %s" % (env.case_insensitive))
+    dbg("  No target found state: %s" % (env.no_target_found_state))
+    dbg("  Enable Service labels: %s" % (env.enable_service_labels))
     dbg("  Hostname boundary match: %s" % (env.hostname_boundary_match))
     dbg("  Strip FQDN when useful: %s" % (env.strip_fqdn))
     dbg("  Monitor host: %s" % (env.monitor_host))
@@ -397,6 +414,12 @@ def parse_args(version: str = "") -> Env:
         help="Manual target to add for 'specify_targets'",
     )
     parser.add_argument(
+        "--no_target_found_state",
+        type=int,
+        default=None,
+        help="State to set when no target is found (default: 3 for 'specify_targets', otherwise 0)",
+    )
+    parser.add_argument(
         "--case_insensitive",
         action="store_true",
         default=env.case_insensitive,
@@ -477,6 +500,7 @@ def parse_args(version: str = "") -> Env:
     env.automation_user = args.automation_user
     env.hostname_boundary_match = not args.no_hostname_boundary_match
     env.case_insensitive = args.case_insensitive
+    env.no_target_found_state = args.no_target_found_state
     env.default_downtime = args.default_downtime
     env.dt_end_gracetime_s = args.dt_end_gracetime_s
     env.my_svc_name = args.display_service_name
@@ -491,7 +515,7 @@ def parse_args(version: str = "") -> Env:
         env.automation_secret = args.plain_automation_password
     elif args.automation_password:
         pw = cmk.utils.password_store.extract(args.automation_password.split(":")[0])
-        env.automation_secret = args.pw
+        env.automation_secret = pw if pw is not None else "_NA_"
 
     if args.monitor_no_downtimes:
         env.monitor_dts = False
@@ -511,7 +535,7 @@ def parse_args(version: str = "") -> Env:
         for t in args.target:
             t = t[0]
             #print(t[0])
-            env.manual_targets += ((t.split(",")[0], t.split(",")[1], t.split(",")[2]),)
+            env.manual_targets += ((t.split(",")[0], t.split(",")[1], t.split(",")[2]),) # type: ignore
     env.strip_fqdn = args.strip_fqdn
     env.omd_host = args.omd_host
     env.omd_site = args.omd_site
@@ -528,8 +552,19 @@ def parse_args(version: str = "") -> Env:
         sys.exit(NAGRES_CRASH)
 
     if not env.automation_secret:
-        env.automation_secret = _read_automation_secret(env)
+        env.automation_secret = _read_automation_secret(env) # type: ignore
+    
 
-    env.cmd_line_hash = hashlib.sha224(f"{args}".encode("utf-8")).hexdigest()
+    # Ensure tempfolder exists
+    os.makedirs(tmp_path, exist_ok=True)
+
+    # Check for service label support.
+    # if os.path.exists(svclb_flag_file) and os.path.getmtime(svclb_flag_file) < (datetime.datetime.now().timestamp() - 3600):
+    #     env.enable_service_labels = True
+    # else:
+    #     env.enable_service_labels = False 
+
+    env.cmd_line_hash = hashlib.sha224(f"{args}{env.enable_service_labels}".encode("utf-8")).hexdigest()        
+
 
     return env

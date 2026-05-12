@@ -101,10 +101,11 @@ class FLock:
 class CacheData:
     hosts_by_id: Dict[str, HostInfo]
     hosts_by_alias: Dict[str, HostInfo]
-    hosts_by_id_insens: Dict[str, Iterable[str]]
-    hosts_by_alias_insens: Dict[str, Iterable[str]]
-    hosts_by_label: Dict[str, Iterable[str]]
+    hosts_by_id_insens: Dict[str, list[str]]
+    hosts_by_alias_insens: Dict[str, list[str]]
+    hosts_by_label: Dict[str, list[str]]
     svcs: Iterable[SvcInfo]
+    svcs_by_label: dict[str, list[SvcInfo]]
     filetime: Optional[datetime.datetime]
 
 
@@ -120,7 +121,7 @@ class InfoCache:
         self._api = api
         # self._sites = sites
 
-    def _find_hosts(self, host_name: str, case_insensitive: bool) -> Iterable[HostInfo]:
+    def _find_hosts(self, host_name: str, case_insensitive: bool) -> list[HostInfo]:
         res: List[HostInfo] = []
         if case_insensitive:
             hns = list(self._cache.hosts_by_id_insens.get(host_name, []))
@@ -263,29 +264,47 @@ class InfoCache:
     ) -> Iterable[Tuple[str, str]]:
         """boundary_match: Only applied to name_regex"""
 
-        # Simulate LQ-behavor
-        if not name_regex.startswith("^"):
-            name_regex = ".*" + name_regex
+
         if host_name_regex != None:
             if not host_name_regex.startswith("^"):
                 host_name_regex = ".*" + host_name_regex
 
-        if boundary_match:
-            name_regex = WORD_BOUND + name_regex + WORD_BOUND
-
         flags = 0
         if case_insensitive:
-            flags = re.IGNORECASE
+            flags = re.IGNORECASE                
 
-        re1 = re.compile(name_regex, flags)
-        re2 = re.compile(optional_identifier, flags) if optional_identifier else None
-        re_host = re.compile(host_name_regex, flags) if host_name_regex else None
-        res = set()
+        if not name_regex.startswith("sl:"):            
+            # Simulate LQ-behavor
+            if not name_regex.startswith("^"):
+                name_regex = ".*" + name_regex
+            
+            if boundary_match:
+                name_regex = WORD_BOUND + name_regex + WORD_BOUND
 
-        for s in self._cache.svcs:
-            if re1.match(s.name) or (re2 and re2.match(s.name)):
-                if (not re_host) or (re_host.match(s.host.name)):
-                    res.add((s.host.name, s.name))
+            re1 = re.compile(name_regex, flags)
+            re2 = re.compile(optional_identifier, flags) if optional_identifier else None
+            re_host = re.compile(host_name_regex, flags) if host_name_regex else None
+            res = set()
+
+            for s in self._cache.svcs:
+                if re1.match(s.name) or (re2 and re2.match(s.name)):
+                    if (not re_host) or (re_host.match(s.host.name)):
+                        res.add((s.host.name, s.name))
+        else:            
+            label_re = name_regex[3:]
+            re1 = re.compile(label_re, flags)
+           
+            re2 = re.compile(optional_identifier, flags) if optional_identifier else None
+            re_host = re.compile(host_name_regex, flags) if host_name_regex else None
+            res = set()
+            
+            for label, svcs in self._cache.svcs_by_label.items():
+                if re1.match(label):    
+                    for s in svcs:                
+                        if (not re2) or (re2 and re2.match(s.name)):
+                            if (not re_host) or (re_host.match(s.host.name)):
+                                res.add((s.host.name, s.name))
+
 
         res = list(res)
         # print("XX", res, name_regex, host_name_regex, case_insensitive)
@@ -298,7 +317,7 @@ class InfoCache:
         return []
 
     @staticmethod
-    def get_cache_file_time() -> Tuple[Optional[datetime.datetime], Optional[int]]:
+    def get_cache_file_time() -> Tuple[Optional[datetime.datetime], Optional[float], bool]:
         try:
             ft = datetime.datetime.fromtimestamp(
                 os.path.getmtime(InfoCache.path), tz=datetime.UTC
@@ -367,12 +386,19 @@ class InfoCache:
                         key = f"{lbl}:{val}"
                         h_by_labels.setdefault(key, set()).add(h.id.name)
 
+                s_by_labels: dict[str, list[SvcInfo]] = {}
+                for s in svcs:
+                    for lbl, val in s.labels.items():
+                        key = f"{lbl}:{val}"
+                        s_by_labels.setdefault(key, list()).append(s)
+
                 self._cache = CacheData(
                     hosts_by_id=h_by_name,
                     hosts_by_alias=h_by_alias,
                     hosts_by_id_insens=h_by_name_insens,
                     hosts_by_alias_insens=h_by_alias_insens,
                     hosts_by_label=h_by_labels,
+                    svcs_by_label=s_by_labels,
                     svcs=svcs,
                     filetime=datetime.datetime.now(datetime.UTC),
                 )
@@ -404,8 +430,8 @@ class InfoCache:
 class LocalState:
     tgt_list: Optional[Tuple[Tuple[str]]]
     downtime_was_reqd_at: Optional[datetime.datetime]
-    no_active_maint: Optional[bool]
-    normal_check_interval: Optional[int] = None
+    no_active_maint: Optional[bool]               # Is NOT "short_lived"
+    normal_check_interval: Optional[int] = None   # Is "short lived"
     _short_lived_refresh: Optional[datetime.datetime] = None
     _cfg_hash: Optional[str] = None
     _last_update_ts: Optional[int] = None
@@ -427,7 +453,8 @@ class LocalStateCache:
         info_cache_file_time: datetime.datetime,
         dt_dur_mins: int,
         cfg_hash: str,
-    ) -> Tuple[Optional[LocalState], Optional[int]]:
+    ) -> Tuple[Optional[LocalState], Optional[float]]:
+        
         path = LocalStateCache._get_path(my_name)
         ts_path = LocalStateCache._get_path(my_name)+".ts"
 
@@ -439,23 +466,24 @@ class LocalStateCache:
         # We try to use 'spead' which is calulated base on instance-id and 
         # 'skip_global_compar' to prevent load-spikes
 
-        # Spread out cache refresh times a bit
+        # Spread out cache refresh times a bit, but at least the global cache age, 
+        # otherwise we may renew short before global cache is newewd
         hash = hashlib.md5(my_name.encode("utf-8"))
         spread = (
-            9 - int(hash.hexdigest(), 16) % 18
-        )  # Spread refresh times +/- 9 minutes
-        dbg(f"State-cache: My spread is {spread}")            
+            1 + int(hash.hexdigest(), 16) % 15
+        )  # Spread refresh times 1-15 minutes
+        dbg(f"LocalState-cache: My spread is {spread}")            
 
         # Only test on global-cache-age in 1 of 3 executions
         # this allows us to use local-caches a bit longer, even global cache
         # was renewed.
         # On high load, only 1 of 5 executions
         sys_load = get_load()
-        load_spread = sys_load > 1.0
-        refresh_chance = 3 if not load_spread else 5
+        do_load_spread = sys_load > 0.9
+        refresh_chance = 3 if not do_load_spread else 5
         skip_global_compar = int(random.random() * 100) % refresh_chance != 0
         dbg(
-            f"State-cache: Skip Global Compar {skip_global_compar}! chance: {refresh_chance} load: {sys_load}"
+            f"LocalState-cache: Skip Global Compar: {skip_global_compar}! chance: {refresh_chance} load: {sys_load}"
         )
 
         try:
@@ -469,71 +497,56 @@ class LocalStateCache:
             
                 not_too_old = age < 60 * (MAX_CACHE_AGE_MINUTES + spread)
                 dbg(
-                    f"State-cache: age {age}s, not_too_old: {not_too_old} (max {(MAX_CACHE_AGE_MINUTES + spread)*60}s)"
+                    f"LocalState-cache: age {age}s, not_too_old: {not_too_old} (max {(MAX_CACHE_AGE_MINUTES + spread)*60}s)"
                 )
-                local_cache_new_than_info_cache = cache_file_time >= info_cache_file_time 
+                local_cache_new_than_global_cache = cache_file_time >= info_cache_file_time 
                 dbg(
-                    f"State-cache: cache_file_time {cache_file_time}, info_cache_file_time {info_cache_file_time}, local_cache_new_than_info_cache: {local_cache_new_than_info_cache}"    
+                    f"LocalState-cache: cache_file_time {cache_file_time}, info_cache_file_time {info_cache_file_time}, local_cache_new_than_global_cache: {local_cache_new_than_global_cache}"    
                 )
 
                 # Use cached data if not too old or we give it some grace time
                 if (not_too_old) and (
-                    (skip_global_compar or (local_cache_new_than_info_cache))
+                    (skip_global_compar or local_cache_new_than_global_cache)
                 ):
                     try:
                         with open(path, "rb") as f:
-                            dbg("State-cache: loading")
+                            dbg("LocalState-cache: loading")
                             data: LocalState = pickle.load(f)
-                            dbg("State-cache: loaded")
+                            dbg("LocaLocalStatelState-cache: loaded")
 
                         if data._cfg_hash != cfg_hash:
                             dbg(
-                                "State-cache: Cfg-hash does not match. cache no longer valid"
+                                "LocalState-cache: Cfg-hash does not match. cache no longer valid"
                             )
                             return None, None
                         else:
-                            dbg("State-cache: Cfg-hash matches")
+                            dbg("LocalState-cache: Cfg-hash matches")
 
-                        # Short-lived-data may be cached for 1/3 of downtime-durations
+                        # Short-lived-data may be cached for the default downtime-durations
                         if not data._short_lived_refresh or (
                             (
                                 datetime.datetime.now(tz=datetime.UTC)
                                 - data._short_lived_refresh
                             ).total_seconds()
-                            > (dt_dur_mins / 3) * (MAX_CACHE_AGE_MINUTES + spread)
+                            > (dt_dur_mins + spread) * 60
                         ):
                             dbg(
-                                f"State-cache: Cleared short-lived-data {data._short_lived_refresh}"
+                                f"LocalState-cache: Cleared short-lived-data {data._short_lived_refresh}"
                             )
                             data._short_lived_refresh = datetime.datetime.now(
                                 tz=datetime.UTC
                             )
                             data.normal_check_interval = None
-
-                        # if data._last_update_ts is not None:
-                        #     # Recalc real age now
-                        #     age = (
-                        #         datetime.datetime.now(tz=datetime.UTC).timestamp()
-                        #         - data._last_update_ts
-                        #     )
-                        #     if age > (60 * (MAX_CACHE_AGE_MINUTES + spread)):
-                        #         dbg("State-cache: Data indicates too old, discarding")
-                        #         return None, None
-                        #     else:
-                        #         pass
-                        #         # dbg(f"State-cache: data is {age}s old")
-                        # else:
-                        #     dbg("State-cache: - no ts in data found, assuming good")
-
-                        dbg("State cache: loaded+using")
+                    
+                        dbg("LocalState cache: loaded+using")
                         return data, age
                     except Exception as ex:
-                        dbg(f"State-cache: load failed {ex}")
+                        dbg(f"LocalState-cache: load failed {ex}")
                 else:
-                    dbg("State-cache: too old or older than info-cache")
+                    dbg("LocalState-cache: too old or older than info-cache")
             else:
                 dbg(
-                    "State-cache: not vaild or nor Info-Cache-Reference-Timestamp (not yet avail?)"
+                    "LocalState-cache: not vaild or nor Info-Cache-Reference-Timestamp (not yet avail?)"
                 )
 
         except Exception as ex:
@@ -543,7 +556,7 @@ class LocalStateCache:
             # traceback.print_exc()
             pass
 
-        dbg("State-cache: Not using cache, returning None, clearing timestamp file")
+        dbg("LocalState-cache: Not using cache, returning None, clearing timestamp file")
         os.unlink(ts_path) if os.path.exists(ts_path) else None
         return None, None
 
@@ -557,7 +570,7 @@ class LocalStateCache:
         if local_state._last_update_ts is None:
             local_state._last_update_ts = datetime.datetime.now(
                 tz=datetime.UTC
-            ).timestamp()
+            ).timestamp() # type: ignore
 
         fn = LocalStateCache._get_path(my_name)
         fn_ts = fn + ".ts"

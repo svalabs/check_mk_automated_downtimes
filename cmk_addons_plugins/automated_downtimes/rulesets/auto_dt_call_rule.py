@@ -21,7 +21,8 @@
 
 from typing import Dict
 
-from cmk.rulesets.v1 import Help, Label, Title
+from cmk.rulesets.v1 import Help, Label, Title, Message
+
 from cmk.rulesets.v1.form_specs import (
     DictGroup,
     DictElement,
@@ -35,6 +36,7 @@ from cmk.rulesets.v1.form_specs import (
     CascadingSingleChoiceElement,
     List,
     String,
+    InputHint,
     DefaultValue,
     Password,
 )
@@ -43,6 +45,7 @@ from cmk.rulesets.v1.rule_specs import ActiveCheck, Topic
 from cmk.rulesets.v1.form_specs.validators import NumberInRange
 
 import logging
+
 
 def _migrate(dct: Dict) -> Dict:
 
@@ -62,9 +65,9 @@ def _migrate(dct: Dict) -> Dict:
             use_perfdata = monitor[3]
             if "timerange" in use_perfdata:
                 new_vals["use_perfadata"] = {
-                    "timerange_start": use_perfdata["timerange"][0],
-                    "timerange_end": use_perfdata["timerange"][1],
-                    "set_dt_flag": use_perfdata.get("set_dt_flag"),
+                    "timerange_start": use_perfdata["timerange"][0],  # type: ignore
+                    "timerange_end": use_perfdata["timerange"][1],  # type: ignore
+                    "set_dt_flag": use_perfdata.get("set_dt_flag"),  # type: ignore
                 }
         dct["monitor"] = ("service", new_vals)
 
@@ -320,7 +323,7 @@ def _monitor_service_sub_form() -> CascadingSingleChoiceElement[str]:
                 ),
             },
         ),
-    )
+    )  # type: ignore
 
 
 def _react_on_sub_form() -> Dictionary:
@@ -392,7 +395,7 @@ def _detection_mode_fully_automated_sub_form() -> CascadingSingleChoiceElement[s
                 ),
             },
         ),
-    )
+    )  # type: ignore
 
 
 def _detection_mode_manual_sub_form() -> CascadingSingleChoiceElement[str]:
@@ -421,14 +424,13 @@ def _detection_mode_manual_sub_form() -> CascadingSingleChoiceElement[str]:
                                     parameter_form=RegularExpression(
                                         predefined_help_text=MatchingScope.INFIX,
                                         title=Title("Host name regex"),
-                                        help_text=Help(
-                                            """Regex to match hostnames. 
+                                        help_text=Help("""Regex to match hostnames. 
                                                <br>
                                                <br>
-                                               Prefix with <tt>hl:</tt> to match against host labels, e.g. <tt>my/nl:100[1-4]</tt> (does not work together with service name regex!).
+                                               Prefix with <tt>hl:</tt> to match against host labels, e.g. <tt>my/nl:100[1-4]</tt> (does not work together with <tt>service name regex/labels</tt>!).
+                                               <br>
                                                Labels will be resolved a list of hosts on cache-update.
-                                            """
-                                        ),
+                                            """),
                                     ),
                                     required=True,
                                 ),
@@ -436,16 +438,23 @@ def _detection_mode_manual_sub_form() -> CascadingSingleChoiceElement[str]:
                                     parameter_form=RegularExpression(
                                         predefined_help_text=MatchingScope.INFIX,
                                         title=Title("Service name regex"),
+                                        help_text=Help("""Regex to match service names. 
+                                               <br>
+                                               <br>
+                                               Prefix with <tt>sl:</tt> to match against service labels, e.g. <tt>my/nl:100[1-4]</tt> (does not work together with <tt>host labels</tt>!).
+                                               <br>
+                                               Labels will be resolved a list of services on cache-update.
+                                            """),
                                     ),
                                     required=True,
-                                ),
+                                ),                                
                             }
                         ),
                     ),
-                ),
+                ),              
             },
         ),
-    )
+    )  # type: ignore
 
 
 def _search_opts_sub_form() -> Dictionary:
@@ -522,7 +531,7 @@ def _api_access_sub_form() -> Dictionary:
                         NumberInRange(
                             min_value=1,
                             max_value=65535,
-                            error_msg="Port must be between 1 and 65535",
+                            error_msg=Message("Port must be between 1 and 65535"),
                         )
                     ],
                 ),
@@ -601,6 +610,17 @@ def _subform_target() -> Dictionary:
             "search_opts": DictElement(
                 parameter_form=_search_opts_sub_form(),
             ),
+            "mt_state_no_targets_found": DictElement(
+                    parameter_form=ServiceState(
+                        title=Title("State if no targets found"),
+                        help_text=Help(
+                            "If no host/service matches the regexes above, this state will be used for the service. Default is <tt>UNKNOWN</tt> for manual target selection and <tt>OK</tt> otherwise. This is useful to trigger notifications or other actions when no targets are found."
+                            + "<br><br>Service summary then contains this string: <tt>No targets defined or no targets found</tt>"
+                        ),
+                        prefill=DefaultValue(3),
+                    ),
+                    required=False,
+            ),
             "dt_end_gracetime_s": DictElement(
                 parameter_form=Integer(
                     title=Title("Grace time in seconds before downtime removal"),
@@ -611,7 +631,9 @@ def _subform_target() -> Dictionary:
                         NumberInRange(
                             min_value=0,
                             max_value=3600,
-                            error_msg="Grace time must be between 0 and 3600 seconds",
+                            error_msg=Message(
+                                "Grace time must be between 0 and 3600 seconds"
+                            ),
                         )
                     ],
                     prefill=DefaultValue(0),
@@ -628,7 +650,9 @@ def _subform_target() -> Dictionary:
                         NumberInRange(
                             min_value=3,
                             max_value=1440,
-                            error_msg="Downtime must be between 0 and 1440 minutes",
+                            error_msg=Message(
+                                "Downtime must be between 0 and 1440 minutes"
+                            ),
                         )
                     ],
                     prefill=DefaultValue(0),
@@ -672,10 +696,9 @@ def _subform_connect_to() -> Dictionary:
 
 def _form_auto_downtimes() -> Dictionary:
     return Dictionary(
-        migrate=_migrate,
+        migrate=_migrate,  # type: ignore
         title=Title("Automated Downtimes"),
-        help_text=Help(
-            """
+        help_text=Help("""
     Automatically set downtimes on hosts/services based on the downtime, state, or output of other hosts/services.<br><br>
     Most input fields (hostnames, service names, display names) support macros.<br><br>
     You can also use regex replacements in these fields, e.g.:<br>
@@ -683,8 +706,7 @@ def _form_auto_downtimes() -> Dictionary:
     Format: 'Text~~Regex w/ capture-groups~~Result \\1 \\2 ...' (\\1, \\2, etc. contain contents of capture groups).
     <br><br>
     Enable inline help for more information on the individual fields!
-"""
-        ),
+"""),
         elements={
             "display_service_name": DictElement(
                 parameter_form=String(
@@ -724,11 +746,9 @@ def _form_auto_downtimes() -> Dictionary:
 rule_spec_auto_downtimes = ActiveCheck(
     name="maintenance",
     title=Title("Automated Downtimes"),
-    help_text=Help(
-        """
+    help_text=Help("""
     Automatically set downtimes on hosts/services based on the downtime, state, or output of other hosts/services.<br><br>
-"""
-    ),
+"""),
     topic=Topic.GENERAL,
     parameter_form=_form_auto_downtimes,
 )
