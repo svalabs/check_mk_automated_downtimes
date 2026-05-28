@@ -21,6 +21,11 @@ See exchange.checkmk.com
 ### Changes
 
 
+anges:
+
+- 2.4.17: 
+  - Fix mistakenly reacting on future downtimes
+
 - 2.4.16:
  - Allow configuring service-state if no targets are found
  - Support `sl:`-Prefix to search services via labels in then Target-Selection. See Inline-help.

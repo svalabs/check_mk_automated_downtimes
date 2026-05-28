@@ -190,6 +190,7 @@ class RestAPI:
         host_name: Optional[str] = None,
         service_name: Optional[str] = None,
         filter_comment: Optional[str] = None,
+        include_pending: bool = False,
     ) -> Iterable[Downtime]:
         """- if host_name is set but not a svc_name, only host-dt  are returned
         - if neighter host_name no servce_name is set all dt are returned
@@ -207,16 +208,16 @@ class RestAPI:
             dct["service_description"] = service_name
         elif host_name:
             dct["host_name"] = host_name
-
-
+        
         dbg("Getting all the downtimes via REST :(")
         resp = self._get("domain-types/downtime/collections/all", dct)
 
         res: Iterable[Downtime] = []
         if resp.status_code == 200:
+            now = datetime.datetime.now(datetime.timezone.utc)
             data = resp.json()
             if "value" in data:
-                for e in data["value"]:
+                for e in data["value"]:                    
                     ne = Downtime(
                         id=e["id"],
                         title=e["title"],
@@ -230,8 +231,13 @@ class RestAPI:
                         ),
                         comment=e["extensions"]["comment"],
                         author=e["extensions"]["author"],
-                        is_svc_dt=e["extensions"].get("is_service") == "yes",
+                        is_svc_dt=e["extensions"].get("is_service") == "yes",                        
                     )
+
+                    ne.is_pending = now < ne.start_time                                   
+
+                    if not include_pending and ne.is_pending:                        
+                        continue
 
                     if ne.is_svc_dt and not ne.svc_name:
                         # Work around brain-dead API or am I

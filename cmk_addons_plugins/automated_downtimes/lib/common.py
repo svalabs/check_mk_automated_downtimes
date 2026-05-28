@@ -119,6 +119,7 @@ class Downtime:
     comment: str
     svc_name: Optional[str] = None
     is_svc_dt: bool = False
+    is_pending: bool = False
 
 
 @dataclass

@@ -122,30 +122,37 @@ class LqAPI:
 
         return list(res)
 
-    def get_downtime_id_list(
-        self, host_name: str, comment_keyword: str
-    ) -> Iterable[str]:
-        query = f"GET downtimes\nFilter: host_name = {host_name}\nFilter: service_display_name ~ {filter}\nFilter: comment ~ ^{comment_keyword}\nColumns: id\n"
-        return self._exec(query)
+    #def get_downtime_id_list(
+    #    self, host_name: str, comment_keyword: str
+    #) -> Iterable[str]:
+    #    query = f"GET downtimes\nFilter: host_name = {host_name}\nFilter: service_display_name ~ {filter}\nFilter: comment ~ ^{comment_keyword}\nColumns: id\n"
+    #    return self._exec(query)
 
     def get_downtimes(
         self,
         host_name: str,
         service_name: Optional[str] = None,
         filter_comment: Optional[str] = None,
+        include_pending: bool = False,
     ) -> list[Downtime]:
 
         query = (
             f"GET downtimes\n"
-            f"Filter: host_name = {host_name}\n"
-            f"Columns: id host_name service_display_name start_time end_time comment author is_service\n"
+            f"Filter: host_name = {host_name}\n"            
         )
 
-        data = self._exec(query)
+        if not include_pending:        
+            query += "Filter: is_pending = 0\n"
 
+        query += f"Filter: service_display_name ~ {service_name}\n" if service_name else ""
+        query += f"Columns: id host_name service_display_name start_time end_time comment author is_service is_pending\n"
+
+        data = self._exec(query)
+    
         res: list[Downtime] = []
         for entry in data:
-            e = entry.split(";")
+            e = entry.split(";")            
+            
             ne = Downtime(
                 id=e[0],
                 title="Downtime",  # Not supported in LQ
@@ -156,8 +163,9 @@ class LqAPI:
                 comment=e[5],
                 author=e[6],
                 is_svc_dt=int(e[7]) != 0,
+                is_pending=int(e[8]) != 0,
             )
-            # FUNC_Debug(ne)
+            
             if service_name:
                 if not ne.svc_name or ne.svc_name.find(service_name) < 0:
                     continue
