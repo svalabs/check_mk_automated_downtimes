@@ -24,7 +24,7 @@ See exchange.checkmk.com
 
 
 Changes:
-- 2.5.2 : 
+- 2.5.2: (Beta!)
   - Supports CMK 2.4+2.5
   - Fixes+Cache-Changes prevented GraceTime from working. Also fixed downtime-param-eval
   - First CMK 2.5 support. Jaeger-Tracing. !!Experimental!! UI-User-Support (Improves REST-API-Access via sessions)
