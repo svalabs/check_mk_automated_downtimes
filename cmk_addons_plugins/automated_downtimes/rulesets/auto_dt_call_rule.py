@@ -690,6 +690,17 @@ def _subform_connect_to() -> Dictionary:
                 ),
                 required=False,
             ),
+            "is_ui_user": DictElement(
+                required=False,
+                parameter_form=BooleanChoice(
+                    title=Title("Is a UI-User (Experimental)"),
+                    label=Label("Enable"),
+                    help_text=Help(
+                        "GUI users with session cookies can significantly improve performance when connecting to the the REST-API. Only enable if you know what you are doing. This is experimental, please report any issues you encounter when using this option!"
+                    ),
+                    prefill=DefaultValue(False),
+                ),
+            ),
         },
     )
 
@@ -734,6 +745,16 @@ def _form_auto_downtimes() -> Dictionary:
                     title=Title("Enable debug logging"),
                     help_text=Help(
                         "Enable debugging to ~/tmp/auto_downtimes.log. Only enable on problems, may fill up your filesystem and eat performance!"
+                    ),
+                    label=Label("Enable"),
+                    prefill=DefaultValue(False),
+                ),
+            ),
+            "enable_jaeger": DictElement(
+                parameter_form=BooleanChoice(
+                    title=Title("Enable Jaeger tracing"),
+                    help_text=Help(
+                        "Enable Jaeger tracing for this plugin. Only CMK 2.5+"
                     ),
                     label=Label("Enable"),
                     prefill=DefaultValue(False),

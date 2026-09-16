@@ -28,50 +28,9 @@ from cmk.server_side_calls.v1 import (
     ActiveCheckCommand,
     ActiveCheckConfig,
 )
-from cmk.utils import hostaddress  # noqa: F401
+
 
 import re, traceback
-
-
-# def _get_dummy_ip_lookup(*hostname: str) -> Optional[str]:
-#     print(hostname)
-#     return hostaddress.HostAddress("127.0.0.2")
-
-
-# def _get_ip_lookup_from_addr(addr: str) -> "IPLookup":
-#     if not addr:
-#         return None
-
-#     return lambda *x: hostaddress.HostAddress(addr)
-
-
-# def collect_macros(hostname: str, ip_lookup: "IPLookup") -> Mapping[str, str]:
-
-#     macros = {}
-
-#     try:
-#         import cmk.base.config as _config
-
-#         # OldStyle macro collection
-#         # TODO: can this be fully replaced by host_config.macros ?
-#         #
-
-#         # try:
-#         try:
-#             ha = _config.get_config_cache().get_host_attributes(hostname, ip_lookup)
-#         except:
-#             # Hacky CMK-2.3-fallback
-#             ha = _config.get_config_cache().get_host_attributes(hostname)
-
-#         hc = _config.get_config_cache().get_host_macros_from_attributes(hostname, ha)
-#         macros = hc
-#     except:
-#         traceback.print_exc()
-#         print("Error fetching host-attributes")
-
-#     print(macros)
-#     return macros
-
 
 # replace regex macros
 def process_regex(input_string: str) -> str:
@@ -125,27 +84,12 @@ def commands_function(
     macros = host_config.macros
     # print(macros)
 
-    # # Oldstyle macro collections, is there a difference two the host_host.macros?
-    # # New macros should include macros nagios.cfg
-    # try:
-    #     try:
-    #         addr = host_config.primary_ip_config.address
-    #     except ValueError:
-    #         addr = None
-
-    #     n_macros = collect_macros(
-    #         host_config.name,
-    #         _get_ip_lookup_from_addr(addr),
-    #     )
-    #     macros.update(n_macros)
-    # except Exception as e:
-    #     print("Error fetching macros: " + traceback.format_exc())
 
     args += ["--host_name", host_config.name]
-
+   
     try:
-        # Temporayy add support for old params, remove after CMK 2.5
-        from cmk_addons.plugins.automated_downtimes.rulesets.auto_dt_call_rule import _migrate
+        # Temporary add support for old params, remove after CMK 2.5
+        from cmk_addons.plugins.automated_downtimes.rulesets.auto_dt_call_rule import _migrate # type: ignore
         params = _migrate(params)    # type: ignore
     except Exception as e:
         pass
@@ -168,26 +112,27 @@ def commands_function(
             if site := connect_to.get("site"):
                 args += ["--omd_site", site]
 
-            if connect_to.get("ssl_verify", False):
+            if connect_to.get("ssl_verify", False) == True:
                 args += ["--verify_ssl"]
 
-            if connect_to.get("disable_proxies", False):
+            if connect_to.get("disable_proxies", False) == True:
                 args += ["--no_proxy"]
 
         if automation_user := connect_section.get("automation_user"): # type: ignore
             args += ["--automation_user", automation_user]
 
+        if connect_section.get("is_ui_user", False) == True: # type: ignore
+            args += ["--is_ui_user"]            
+
         if automation_password := connect_section.get("automation_password"): # type: ignore
             args += ["--automation_password", automation_password]
 
-        if default_downtime := connect_section.get("default_downtime"): # type: ignore
-            args += ["--default_downtime", str(default_downtime)]
-
-        if dt_end_gracetime_s := connect_section.get("dt_end_gracetime_s"): # type: ignore
-            args += ["--dt_end_gracetime_s", str(dt_end_gracetime_s)]
-
+       
     if params.get("debug_log"):
         args += ["--debug_log"]
+
+    if params.get("enable_jaeger"):
+        args += ["--jaeger"]
 
     if monitor_section := params.get("monitor_section"):
         if monitor := monitor_section.get("monitor"): # type: ignore
@@ -243,7 +188,13 @@ def commands_function(
                 args += ["--monitor_state_3"]
 
 
-    if target_section := params.get("target_section"):
+    if target_section := params.get("target_section"):        
+        if dt_end_gracetime_s := target_section.get("dt_end_gracetime_s"): # type: ignore
+            args += ["--dt_end_gracetime_s", str(dt_end_gracetime_s)]
+
+        if default_downtime := target_section.get("default_downtime"): # type: ignore
+            args += ["--default_downtime", str(default_downtime)]
+
         if "dependency_detection" in target_section:
             dtup = target_section["dependency_detection"] # type: ignore
             detect_mode = dtup[0]

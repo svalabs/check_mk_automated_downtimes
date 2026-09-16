@@ -25,10 +25,13 @@ import socket
 
 from typing import Iterable, Optional
 from .common import Downtime, omd_root
+from .tracing_compat import get_tracer
 
 #
 # Not all LQ-Calls are used anymore, and thus aren't tested well
 #
+
+tracer = get_tracer(__name__)
 
 
 class LqAPI:
@@ -37,15 +40,25 @@ class LqAPI:
         self._hostfields_to_check = ["host_name", "host_display_name"]
 
     def _exec(self, lq: str):
-        ls = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        ls.connect("%s/tmp/run/live" % omd_root)
-        ls.send(lq.encode())
-        ls.shutdown(socket.SHUT_WR)
+        lines = lq.splitlines()
+        first_line = lines[0] if lines else ""
+        object_type = first_line.removeprefix("GET ").strip().lower() or "unknown"
+        filter_count = sum(1 for line in lines if line.startswith("Filter:"))
 
-        res = [ln for ln in ls.recv(100000000).decode().split("\n")[:-1]]
-        # FUNC_Debug(f"~LQ~ Result {res}")
+        with tracer.span("automated_downtimes.livestatus.query") as span:
+            span.set_attribute("livestatus.object", object_type)
+            span.set_attribute("livestatus.filter_count", filter_count)
 
-        return res
+            ls = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            ls.connect("%s/tmp/run/live" % omd_root)
+            ls.send(lq.encode())
+            ls.shutdown(socket.SHUT_WR)
+
+            res = [ln for ln in ls.recv(100000000).decode().split("\n")[:-1]]
+            span.set_attribute("livestatus.result_rows", len(res))
+            # FUNC_Debug(f"~LQ~ Result {res}")
+
+            return res
 
     def find_hosts(self, regex: str) -> Iterable[str]:
         # Original

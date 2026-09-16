@@ -20,18 +20,28 @@
 #                       by michael.hoess@sva.de + colleagues
 
 
+import base64
 import datetime
+import hashlib
+import json
 import os
 import requests
 
-from typing import Dict, Iterable, Optional, Tuple, Union
+from cmk import trace
+
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 from urllib3.exceptions import InsecureRequestWarning
+from .tracing_compat import get_tracer
+
+tracer = get_tracer(__name__)
+
 
 from .common import (
     MAX_QUERY_BATCH_SIZE,
     dbg,
     chunks,
+    tmp_path,
     Downtime,
     HostId,
     HostInfo,
@@ -51,19 +61,32 @@ class RestAPI:
         use_ssl=False,
         verify_ssl=False,
         no_proxy=False,
+        is_gui_user: bool = False,
+        cookie_discriminators: Optional[List[str]] = None,
     ):
 
         self._hostfields_to_check = ["name", "display_name"]
+        self._host = host
+        self._site = site
+        self._autouser = autouser
+        self._passwd = passwd
+        self._is_gui_user = is_gui_user
+        self._last_gui_login: Optional[datetime.datetime] = None
+        self._gui_relogin_seconds = 600
+        self._cookie_discriminators = cookie_discriminators or []
+        self._cookie_hash = self._compute_cookie_hash()
 
         scheme = "http" if not use_ssl else "https"
 
         if not verify_ssl:
             requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning) # type: ignore
 
-        self.api_url = f"{scheme}://{host}:{port}/{site}/check_mk/api/1.0"
+        self._base_url = f"{scheme}://{host}:{port}"
+        self.api_url = f"{self._base_url}/{site}/check_mk/api/1.0"
         self._session = requests.session()
         self._session.verify = verify_ssl
-        self._session.headers["Authorization"] = f"Bearer {autouser} {passwd}"
+        if not self._is_gui_user:
+            self._session.headers["Authorization"] = f"Bearer {autouser} {passwd}"
         self._session.headers["Accept"] = "application/json"
         if no_proxy:
             for p in "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY":
@@ -71,27 +94,179 @@ class RestAPI:
                     del os.environ[p]
             self._session.proxies = {"http": None, "https": None} # type: ignore
 
-    def _get(self, url: str, params: Dict):
-        resp = self._session.get(
-            f"{self.api_url}/{url}", params=params, verify=self._session.verify  # Clown
-        )
+        if self._is_gui_user:
+            # Using GUI users with session-cookie shaves off around 200ms per request
+            # This can be seen when jaeger-tracing "Activating changes" from the UI.
+            # Addedumg this forums posts now confirms our findings:        
+            # https://forum.checkmk.com/t/rest-api-performance/43002/8
+            self._load_cookies_from_file()
 
-        return resp
+
+    def _compute_cookie_hash(self) -> str:
+        content = "|".join(self._cookie_discriminators)
+        digest = hashlib.sha256(content.encode()).digest()[:6]
+        return base64.b64encode(digest).decode().rstrip("=")
+
+    def _cookie_file_path(self) -> str:
+        return f"{tmp_path}auth_{self._site}.{self._cookie_hash}.cookie"
+
+    def _load_cookies_from_file(self) -> None:        
+        if not os.path.exists(self._cookie_file_path()):
+            dbg(f"No cookie file found at {self._cookie_file_path()}")        
+            return
+        try:
+            with open(self._cookie_file_path(), "r") as f:
+                cookies_dict = json.load(f)
+            for name, value in cookies_dict.items():
+                self._session.cookies.set(name, value)                    
+        except Exception as e:
+            dbg(f"Failed to load cookies from file: {e}")
+
+    def _save_cookies_to_file(self) -> None:
+        try:
+            cookie_dict = requests.utils.dict_from_cookiejar(self._session.cookies)
+            tmp_file = f"{self._cookie_file_path()}.{os.getppid()}.tmp"
+            with open(tmp_file, "w") as f:
+                json.dump(cookie_dict, f)
+            os.rename(tmp_file, self._cookie_file_path())
+        except Exception as e:
+            dbg(f"Failed to save cookies to file: {e}")
+
+    def _trace_headers(self) -> Dict[str, str]:
+        carrier = trace.context_for_environment()
+        headers: Dict[str, str] = {}
+        if "TRACEPARENT" in carrier:
+            headers["traceparent"] = carrier["TRACEPARENT"]
+        if "TRACESTATE" in carrier:
+            headers["tracestate"] = carrier["TRACESTATE"]
+        return headers
+
+    def _needs_gui_relogin(self) -> bool:
+        return False # We don't track timeout at the moment, relying on 401.
+        # if self._last_gui_login is None:
+        #     return True
+
+        # age = (
+        #     datetime.datetime.now(datetime.timezone.utc) - self._last_gui_login
+        # ).total_seconds()
+        # return age >= self._gui_relogin_seconds
+
+    def _cookie_name(self) -> str:
+        return f"auth_{self._site}"
+
+    def _ensure_gui_session(self, force: bool = False) -> None:        
+        if not self._is_gui_user:
+            return        
+
+        with tracer.span("automated_downtimes.ensure_gui_session") as span:            
+            
+            has_cookie = self._cookie_name() in self._session.cookies
+            if not force and has_cookie and not self._needs_gui_relogin():                
+                span.set_attribute("having_and_using_cookie", True)
+                return
+            else:
+                span.set_attribute("having_and_using_cookie", False)
+
+            login_url = f"{self._base_url}/{self._site}/check_mk/login.py"
+            payload = {
+                "_login": "1",
+                "_username": self._autouser,
+                "_password": self._passwd,
+                "_origtarget": "index.py",
+            }
+
+            resp = self._session.post(
+                login_url,
+                data=payload,
+                allow_redirects=False,
+                verify=self._session.verify,
+            )
+
+            span.set_attribute("status", resp.status_code)
+            span.set_attribute("force", force)
+
+            if self._cookie_name() not in self._session.cookies:
+                span.set_attribute("login_ok", False)
+                raise Exception(
+                    f"GUI login failed for user '{self._autouser}' (status {resp.status_code})"
+                )
+
+            span.set_attribute("login_ok", True)
+            self._last_gui_login = datetime.datetime.now(datetime.timezone.utc)
+            self._save_cookies_to_file()
+
+    def _get(self, url: str, params: Dict):
+        with tracer.span("automated_downtimes.rest.get") as span:
+            span.set_attribute("http.request.method", "GET")
+            span.set_attribute("url.path", url)
+            span.set_attribute("cmk.site", self._site)
+            span.set_attribute("server.address", self._host)
+            span.set_attribute("rest.params.count", len(params))
+            trace_headers = self._trace_headers()
+            span.set_attribute("trace.context.propagated", bool(trace_headers))
+
+            if self._is_gui_user:
+                self._ensure_gui_session()
+
+            resp = self._session.get(
+                f"{self.api_url}/{url}",
+                params=params,
+                headers=trace_headers,
+                verify=self._session.verify,  # Clown
+            )
+
+            if self._is_gui_user and resp.status_code in (401, 403):
+                self._ensure_gui_session(force=True)
+                resp = self._session.get(
+                    f"{self.api_url}/{url}",
+                    params=params,
+                    headers=trace_headers,
+                    verify=self._session.verify,  # Clown
+                )
+
+            span.set_attribute("http.response.status_code", resp.status_code)
+            return resp
 
     def _post(self, url: str, dct: Dict) -> requests.Response:
         # jt = json.dumps(obj)
         # print(jt)
 
-        resp = self._session.post(
-            f"{self.api_url}/{url}",
-            headers={
-                "Content-Type": "application/json",
-            },
-            json=dct,
-            verify=self._session.verify,  # Clown
-        )
+        with tracer.span("automated_downtimes.rest.post") as span:
+            span.set_attribute("http.request.method", "POST")
+            span.set_attribute("url.path", url)
+            span.set_attribute("cmk.site", self._site)
+            span.set_attribute("server.address", self._host)
+            span.set_attribute("rest.body.keys", len(dct))
+            if "delete_type" in dct:
+                span.set_attribute("rest.delete_type", str(dct["delete_type"]))
 
-        return resp
+            req_headers = {
+                "Content-Type": "application/json",
+            }
+            req_headers.update(self._trace_headers())
+            span.set_attribute("trace.context.propagated", len(req_headers) > 1)
+
+            if self._is_gui_user:
+                self._ensure_gui_session()
+
+            resp = self._session.post(
+                f"{self.api_url}/{url}",
+                headers=req_headers,
+                json=dct,
+                verify=self._session.verify,  # Clown
+            )
+
+            if self._is_gui_user and resp.status_code in (401, 403):
+                self._ensure_gui_session(force=True)
+                resp = self._session.post(
+                    f"{self.api_url}/{url}",
+                    headers=req_headers,
+                    json=dct,
+                    verify=self._session.verify,  # Clown
+                )
+
+            span.set_attribute("http.response.status_code", resp.status_code)
+            return resp
 
     def _raise_error(self, req_name: str, resp: Union[requests.Response, int]):
         try:
@@ -104,6 +279,9 @@ class RestAPI:
             # is only status code
             code = resp
             msg = ""
+        span = trace.get_current_span()
+        span.set_attribute("rest.error.request", req_name)
+        span.set_attribute("rest.error.status_code", int(code) if isinstance(code, int) else str(code))
         raise Exception(f"Error while '{req_name}: {code} ({msg})")
 
     #
@@ -191,7 +369,7 @@ class RestAPI:
         service_name: Optional[str] = None,
         filter_comment: Optional[str] = None,
         include_pending: bool = False,
-    ) -> Iterable[Downtime]:
+    ) -> list[Downtime]:
         """- if host_name is set but not a svc_name, only host-dt  are returned
         - if neighter host_name no servce_name is set all dt are returned
         """
@@ -217,7 +395,10 @@ class RestAPI:
             now = datetime.datetime.now(datetime.timezone.utc)
             data = resp.json()
             if "value" in data:
-                for e in data["value"]:                    
+                for e in data["value"]:                  
+
+                    svc_val = e["extensions"].get("is_service")
+
                     ne = Downtime(
                         id=e["id"],
                         title=e["title"],
@@ -231,7 +412,7 @@ class RestAPI:
                         ),
                         comment=e["extensions"]["comment"],
                         author=e["extensions"]["author"],
-                        is_svc_dt=e["extensions"].get("is_service") == "yes",                        
+                        is_svc_dt=(svc_val == "yes") or (svc_val is True)
                     )
 
                     ne.is_pending = now < ne.start_time                                   

@@ -30,8 +30,12 @@ import pickle
 import time
 import urllib.parse
 
+from cmk import trace
+
 from typing import Dict, Iterable, List, Optional, Tuple
 from dataclasses import dataclass
+
+from .tracing_compat import get_tracer
 
 from .restapi import RestAPI
 from .common import (
@@ -44,6 +48,8 @@ from .common import (
     SvcInfo,
     get_load,
 )
+
+tracer = get_tracer(__name__)
 
 
 # Lock helper
@@ -98,7 +104,7 @@ class FLock:
 
 
 @dataclass
-class CacheData:
+class GlobalCacheData:
     hosts_by_id: Dict[str, HostInfo]
     hosts_by_alias: Dict[str, HostInfo]
     hosts_by_id_insens: Dict[str, list[str]]
@@ -109,13 +115,13 @@ class CacheData:
     filetime: Optional[datetime.datetime]
 
 
-class InfoCache:
+class GlobalCache:
 
     path = f"{omd_root}/tmp/check_mk/auto_downtimes/auto_downtimes_cache.pkl"
 
     _api: RestAPI
     _sites: Iterable[str]
-    _cache: CacheData
+    _cache: GlobalCacheData
 
     def __init__(self, api: RestAPI):
         self._api = api
@@ -320,7 +326,7 @@ class InfoCache:
     def get_cache_file_time() -> Tuple[Optional[datetime.datetime], Optional[float], bool]:
         try:
             ft = datetime.datetime.fromtimestamp(
-                os.path.getmtime(InfoCache.path), tz=datetime.UTC
+                os.path.getmtime(GlobalCache.path), tz=datetime.UTC
             )
             age = (datetime.datetime.now(tz=datetime.UTC) - ft).total_seconds()
             expired = age >= 60 * MAX_CACHE_AGE_MINUTES
@@ -329,8 +335,13 @@ class InfoCache:
         except:
             return None, None, True
 
-    def load(self) -> bool:
+    @tracer.instrument("automated_downtimes.global_cache.load")
+    def load(self) -> bool:        
         fn = self.path
+
+        span = trace.get_current_span()        
+        span.set_attribute("cache.path.exists", os.path.exists(fn))
+
         try:
             if os.path.exists(fn):
                 cache_file_time = datetime.datetime.fromtimestamp(
@@ -339,6 +350,9 @@ class InfoCache:
                 age = (
                     datetime.datetime.now(datetime.UTC) - cache_file_time
                 ).total_seconds()
+                span.set_attribute("cache.age.seconds", float(age))
+                span.set_attribute("cache.too_old", age >= 60 * MAX_CACHE_AGE_MINUTES)
+
                 if age < 60 * MAX_CACHE_AGE_MINUTES:
                     try:
                         with open(fn, "rb") as f:
@@ -350,26 +364,41 @@ class InfoCache:
                     except Exception as ex:
                         dbg(f"Global-Cache load failed {ex}")
                     else:
+                        span.set_attribute("cache.hit", True)
+                        span.set_attribute("cache.source", "pickle")
+                        span.set_attribute("cache.load.success", True)
                         return True
                 else:
                     dbg("Global-Cache too old")
 
         except Exception as ex:
             dbg(f"Err while loading global-cache: {ex}")
+            span.set_attribute("cache.load.success", False)
             # pass
 
         # No valid cache, try to create
-        if self._update():
-            return True
-        else:
-            return False
+        updated = self._update()
 
+        span.set_attribute("cache.hit", False)
+        span.set_attribute("cache.source", "rebuild")
+        span.set_attribute("cache.load.success", updated)
+        return updated
+
+    @tracer.instrument("automated_downtimes.global_cache.update")
     def _update(self) -> bool:
+        span = trace.get_current_span()        
+
         dbg("Updating global-cache")
         try:
-            with FLock(CACHE_LOCK) as lock:
-                hosts = self._api.get_hosts()
-                svcs = self._api.get_services()
+            with FLock(CACHE_LOCK) as lock:                
+                span.set_attribute("cache.lock.acquired", True)
+
+                hosts = list(self._api.get_hosts())
+                svcs = list(self._api.get_services())
+
+                span.set_attribute("cache.hosts.count", len(hosts))
+                span.set_attribute("cache.services.count", len(svcs))
+
                 # print("X", svcs)
                 h_by_name = {h.id.name: h for h in hosts}
                 h_by_alias = {h.id.alias: h for h in hosts}
@@ -392,7 +421,7 @@ class InfoCache:
                         key = f"{lbl}:{val}"
                         s_by_labels.setdefault(key, list()).append(s)
 
-                self._cache = CacheData(
+                self._cache = GlobalCacheData(
                     hosts_by_id=h_by_name,
                     hosts_by_alias=h_by_alias,
                     hosts_by_id_insens=h_by_name_insens,
@@ -406,17 +435,21 @@ class InfoCache:
                 fn = self.path
                 os.makedirs(os.path.dirname(fn), exist_ok=True)
                 time.sleep(
-                    5
+                    3
                 )  # Paranoia too reduce races, by instances started before us
                 with open(fn, "wb") as f:
                     pickle.dump(self._cache, f)
 
                 dbg("Updating global-cache done")
+                span.set_attribute("cache.update.success", True)
                 return True
         except FLockException as oex:
             dbg("Cannot acquire lock. Locked by other process?")
+            span.set_attribute("cache.lock.acquired", False)
+            span.set_attribute("cache.update.success", False)
             return False
         except Exception as ex:
+            span.set_attribute("cache.update.success", False)
             raise
 
 
@@ -425,40 +458,163 @@ class InfoCache:
 #
 #
 
-
+#
+# LocalState is persistent and needs to be reliable
+#
 @dataclass
+class LocalStateData:    
+    downtime_was_reqd_at: Optional[datetime.datetime] # Is NOT "short_lived"
+    # no_active_maint: Optional[bool]               
+    normal_check_interval: Optional[int] = None   
+    normal_check_interval_last_update_ts: Optional[datetime.datetime] = None
+
+
 class LocalState:
-    tgt_list: Optional[Tuple[Tuple[str]]]
-    downtime_was_reqd_at: Optional[datetime.datetime]
-    no_active_maint: Optional[bool]               # Is NOT "short_lived"
-    normal_check_interval: Optional[int] = None   # Is "short lived"
+
+    path_templ = f"{omd_root}/var/check_mk/auto_downtimes/_$MYNAME$.state.pkl"
+
+    @staticmethod
+    def _get_path(my_name: str) -> str:
+        return LocalState.path_templ.replace(
+            "$MYNAME$", urllib.parse.quote(my_name)
+        )
+
+    @staticmethod
+    @tracer.instrument("automated_downtimes.local_state.load")
+    def load(
+        my_name: str,
+    ) -> Tuple[LocalStateData, float]:        
+        
+        path = LocalState._get_path(my_name)        
+        #ts_path = LocalState._get_path(my_name)+".ts"
+
+        span = trace.get_current_span()
+        span.set_attribute("cache.kind", "localstate")
+        span.set_attribute("local_state.path.exists", os.path.exists(path))
+        #span.set_attribute("local_state.timestamp_path.exists", os.path.exists(ts_path))
+
+
+        try:
+            if os.path.exists(path): # and os.path.exists(ts_path):
+                cache_file_time = datetime.datetime.fromtimestamp(
+                    os.path.getmtime(path), tz=datetime.UTC
+                )
+                age = (
+                    datetime.datetime.now(tz=datetime.UTC) - cache_file_time
+                ).total_seconds()
+                span.set_attribute("local_state.age.seconds", float(age))
+            
+                max_age =  60 * 60 * 24
+                not_too_old = age < max_age # Plugin as inactive 
+
+                span.set_attribute("local_state.not_too_old", not_too_old)
+                dbg(
+                    f"LocalState: age {age}s, not_too_old: {not_too_old} (max {max_age}s)"
+                )
+                
+                # Use  data if not too old or we give it some grace time
+                if (not_too_old):
+                    try:
+                        with open(path, "rb") as f:
+                            dbg("LocalState: loading")
+                            data: LocalStateData = pickle.load(f)
+                            dbg("LocalCache: loaded")
+
+                                          
+                        dbg("LocalState: loaded+using")
+                        span.set_attribute("local_state.hit", True)
+                        span.set_attribute("local_state.normal_check_interval", str(data.normal_check_interval))
+                        span.set_attribute("local_state.downtime_was_reqd_at", str(data.downtime_was_reqd_at))
+
+                        return data, age
+                    except Exception as ex:
+                        dbg(f"LocalState: load failed {ex}")
+                        span.set_attribute("local_state.hit", False)
+                else:
+                    dbg("LocalState: too old")
+            else:
+                dbg(
+                    "LocalState: not valid"
+                )
+
+        except Exception as ex:
+            dbg(f"Err while loading state-cache: {ex}. Not using")
+            # FIXME: Can also occur when pkl-file does not exists. Line 421?
+            # import traceback
+            # traceback.print_exc()
+            pass
+
+        dbg("LocalState: Not using state, returning None")
+        #os.unlink(ts_path) if os.path.exists(ts_path) else None
+        span.set_attribute("local_state.hit", False)
+        return LocalStateData(None, None, None), 0
+
+    @staticmethod
+    @tracer.instrument("automated_downtimes.local_state.write")
+    def write(my_name, local_state: LocalStateData):
+        span = trace.get_current_span()        
+        span.set_attribute("local_cache.downtime_was_reqd_at", str(local_state.downtime_was_reqd_at))
+
+        fn = LocalState._get_path(my_name)
+        #fn_ts = fn + ".ts"
+
+        os.makedirs(os.path.dirname(fn), exist_ok=True)
+        with open(fn, "wb") as f:
+            pickle.dump(local_state, f)
+        dbg("State written to disk")
+
+        # if not os.path.exists(fn_ts):
+        #     with open(fn_ts, "w") as f:
+        #         f.write("")
+        #     dbg("State timestamp file written to disk")
+
+        span.set_attribute("local_state.write.success", True)
+
+
+           
+#
+# LocalCache may be always rebuilt from other sources, is time limited, won't survive reboots
+# and live-retricted by age of global cache
+#             
+@dataclass
+class LocalCacheData:
+    tgt_list: Optional[Tuple[Tuple[str]]]    
+    #downtime_was_reqd_at: Optional[datetime.datetime] # Is NOT "short_lived"
+    no_active_maint: Optional[bool]               
+    #normal_check_interval: Optional[int] = None   # Is "short lived"
     _short_lived_refresh: Optional[datetime.datetime] = None
     _cfg_hash: Optional[str] = None
     _last_update_ts: Optional[int] = None
 
 
-class LocalStateCache:
+class LocalCache:
 
     path_templ = f"{omd_root}/tmp/check_mk/auto_downtimes/_$MYNAME$.cache.pkl"
 
     @staticmethod
     def _get_path(my_name: str) -> str:
-        return LocalStateCache.path_templ.replace(
+        return LocalCache.path_templ.replace(
             "$MYNAME$", urllib.parse.quote(my_name)
         )
 
     @staticmethod
+    @tracer.instrument("automated_downtimes.local_cache.load")
     def load(
         my_name: str,
-        info_cache_file_time: datetime.datetime,
+        global_cache_file_time: datetime.datetime,
         dt_dur_mins: int,
         cfg_hash: str,
-    ) -> Tuple[Optional[LocalState], Optional[float]]:
+    ) -> Tuple[Optional[LocalCacheData], Optional[float]]:        
         
-        path = LocalStateCache._get_path(my_name)
-        ts_path = LocalStateCache._get_path(my_name)+".ts"
+        path = LocalCache._get_path(my_name)
+        ts_path = LocalCache._get_path(my_name)+".ts"
 
-        # Force refresh every x minutes, must be newer than info-cache
+        span = trace.get_current_span()
+        span.set_attribute("cache.kind", "local")
+        span.set_attribute("local_cache.path.exists", os.path.exists(path))
+        span.set_attribute("local_cache.timestamp_path.exists", os.path.exists(ts_path))
+
+        # Force refresh every x minutes, must be newer than Global-cache
         #         
         # We now require the global cache to be available and valid.
         # This must be ensured by the caller.
@@ -472,7 +628,9 @@ class LocalStateCache:
         spread = (
             1 + int(hash.hexdigest(), 16) % 15
         )  # Spread refresh times 1-15 minutes
-        dbg(f"LocalState-cache: My spread is {spread}")            
+
+        span.set_attribute("local_cache.spread.minutes", spread)
+        dbg(f"LocalCache: My spread is {spread}")            
 
         # Only test on global-cache-age in 1 of 3 executions
         # this allows us to use local-caches a bit longer, even global cache
@@ -482,8 +640,11 @@ class LocalStateCache:
         do_load_spread = sys_load > 0.9
         refresh_chance = 3 if not do_load_spread else 5
         skip_global_compar = int(random.random() * 100) % refresh_chance != 0
+
+        span.set_attribute("local_cache.skip_global_compare", skip_global_compar)
+        span.set_attribute("local_cache.refresh_chance", refresh_chance)
         dbg(
-            f"LocalState-cache: Skip Global Compar: {skip_global_compar}! chance: {refresh_chance} load: {sys_load}"
+            f"LocalCache: Skip Global Compar: {skip_global_compar}! chance: {refresh_chance} load: {sys_load}"
         )
 
         try:
@@ -494,14 +655,20 @@ class LocalStateCache:
                 age = (
                     datetime.datetime.now(tz=datetime.UTC) - cache_file_time
                 ).total_seconds()
+                span.set_attribute("local_cache.age.seconds", float(age))
             
                 not_too_old = age < 60 * (MAX_CACHE_AGE_MINUTES + spread)
+
+                span.set_attribute("local_cache.not_too_old", not_too_old)
                 dbg(
-                    f"LocalState-cache: age {age}s, not_too_old: {not_too_old} (max {(MAX_CACHE_AGE_MINUTES + spread)*60}s)"
+                    f"LocalCache: age {age}s, not_too_old: {not_too_old} (max {(MAX_CACHE_AGE_MINUTES + spread)*60}s)"
                 )
-                local_cache_new_than_global_cache = cache_file_time >= info_cache_file_time 
+
+                local_cache_new_than_global_cache = cache_file_time >= global_cache_file_time 
+
+                span.set_attribute("local_cache.newer_than_global", local_cache_new_than_global_cache)
                 dbg(
-                    f"LocalState-cache: cache_file_time {cache_file_time}, info_cache_file_time {info_cache_file_time}, local_cache_new_than_global_cache: {local_cache_new_than_global_cache}"    
+                    f"LocalCache: cache_file_time {cache_file_time}, global_cache_file_time {global_cache_file_time}, local_cache_new_than_global_cache: {local_cache_new_than_global_cache}"    
                 )
 
                 # Use cached data if not too old or we give it some grace time
@@ -510,43 +677,48 @@ class LocalStateCache:
                 ):
                     try:
                         with open(path, "rb") as f:
-                            dbg("LocalState-cache: loading")
-                            data: LocalState = pickle.load(f)
-                            dbg("LocaLocalStatelState-cache: loaded")
+                            dbg("LocalCache: loading")
+                            data: LocalCacheData = pickle.load(f)
+                            dbg("LocalCache: loaded")
 
                         if data._cfg_hash != cfg_hash:
                             dbg(
-                                "LocalState-cache: Cfg-hash does not match. cache no longer valid"
+                                "LocalCache: Cfg-hash does not match. cache no longer valid"
                             )
+                            span.set_attribute("local_cache.cfg_hash_match", False)
+                            span.set_attribute("local_cache.hit", False)
                             return None, None
                         else:
-                            dbg("LocalState-cache: Cfg-hash matches")
+                            dbg("LocalCache: Cfg-hash matches")
+                            span.set_attribute("local_cache.cfg_hash_match", True)
 
                         # Short-lived-data may be cached for the default downtime-durations
-                        if not data._short_lived_refresh or (
-                            (
-                                datetime.datetime.now(tz=datetime.UTC)
-                                - data._short_lived_refresh
-                            ).total_seconds()
-                            > (dt_dur_mins + spread) * 60
-                        ):
-                            dbg(
-                                f"LocalState-cache: Cleared short-lived-data {data._short_lived_refresh}"
-                            )
-                            data._short_lived_refresh = datetime.datetime.now(
-                                tz=datetime.UTC
-                            )
-                            data.normal_check_interval = None
+                        # if not data._short_lived_refresh or (
+                        #     (
+                        #         datetime.datetime.now(tz=datetime.UTC)
+                        #         - data._short_lived_refresh
+                        #     ).total_seconds()
+                        #     > (dt_dur_mins + spread) * 60
+                        # ):
+                        #     dbg(
+                        #         f"LocalCache: Cleared short-lived-data {data._short_lived_refresh}"
+                        #     )
+                        #     data._short_lived_refresh = datetime.datetime.now(
+                        #         tz=datetime.UTC
+                        #     )
+                        #     data.normal_check_interval = None
                     
-                        dbg("LocalState cache: loaded+using")
+                        dbg("LocalCache: loaded+using")
+                        span.set_attribute("local_cache.hit", True)
                         return data, age
                     except Exception as ex:
-                        dbg(f"LocalState-cache: load failed {ex}")
+                        dbg(f"LocalCache: load failed {ex}")
+                        span.set_attribute("local_cache.hit", False)
                 else:
-                    dbg("LocalState-cache: too old or older than info-cache")
+                    dbg("LocalCache: too old or older than global-cache")
             else:
                 dbg(
-                    "LocalState-cache: not vaild or nor Info-Cache-Reference-Timestamp (not yet avail?)"
+                    "LocalCache: not vaild or nor Global-Cache-Reference-Timestamp (not yet avail?)"
                 )
 
         except Exception as ex:
@@ -556,31 +728,39 @@ class LocalStateCache:
             # traceback.print_exc()
             pass
 
-        dbg("LocalState-cache: Not using cache, returning None, clearing timestamp file")
+        dbg("LocalCache: Not using cache, returning None, clearing timestamp file")
         os.unlink(ts_path) if os.path.exists(ts_path) else None
+        span.set_attribute("local_cache.hit", False)
         return None, None
 
     @staticmethod
-    def write(my_name, local_state: LocalState, cfg_hash: str):
-        if local_state._cfg_hash is not None and cfg_hash != local_state._cfg_hash:
+    @tracer.instrument("automated_downtimes.local_cache.write")
+    def write(my_name, local_cache: LocalCacheData, cfg_hash: str):
+        span = trace.get_current_span()        
+        span.set_attribute("local_cache.has_targets", local_cache.tgt_list is not None)
+
+
+        if local_cache._cfg_hash is not None and cfg_hash != local_cache._cfg_hash:
             raise Exception("Trying to update cfg_hash with another one in localstate")
-        if local_state._cfg_hash is None:
+        if local_cache._cfg_hash is None:
             dbg("Adding _cfg_hash to localstate")
-            local_state._cfg_hash = cfg_hash
-        if local_state._last_update_ts is None:
-            local_state._last_update_ts = datetime.datetime.now(
+            local_cache._cfg_hash = cfg_hash
+        if local_cache._last_update_ts is None:
+            local_cache._last_update_ts = datetime.datetime.now(
                 tz=datetime.UTC
             ).timestamp() # type: ignore
 
-        fn = LocalStateCache._get_path(my_name)
+        fn = LocalCache._get_path(my_name)
         fn_ts = fn + ".ts"
 
         os.makedirs(os.path.dirname(fn), exist_ok=True)
         with open(fn, "wb") as f:
-            pickle.dump(local_state, f)
+            pickle.dump(local_cache, f)
         dbg("State-cache written to disk")
 
         if not os.path.exists(fn_ts):
             with open(fn_ts, "w") as f:
                 f.write("")
             dbg("State-cache timestamp file written to disk")
+
+        span.set_attribute("local_cache.write.success", True)

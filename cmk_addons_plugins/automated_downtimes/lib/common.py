@@ -118,8 +118,8 @@ class Downtime:
     author: str 
     comment: str
     svc_name: Optional[str] = None
-    is_svc_dt: bool = False
-    is_pending: bool = False
+    is_svc_dt: bool = False    
+    is_pending: bool = False # Currently is_pending is most likely already filtered out, so always false
 
 
 @dataclass
@@ -230,6 +230,7 @@ class Env:
     no_proxy = False
     verify_ssl = False
     automation_user = "automation"
+    is_ui_user = False
     automation_secret: str|None = None
     no_match_msg_tag = "***"  # "(!)"
 
@@ -273,6 +274,7 @@ def show_config_dump(env: Env):
     dbg("  Verify SSL: %s" % (env.verify_ssl))
     dbg("  Automation user: %s" % (env.automation_user))
     dbg("  Automation secret: %s" % (env.automation_secret))
+    dbg("  Is UI-User: %s" % (env.is_ui_user))
     dbg("  Default downtime: %s min" % (env.default_downtime))
     dbg("  DT End Gracetime: %s s" % (env.dt_end_gracetime_s))
     dbg("  My Hostname: %s" % (env.my_host_name))
@@ -313,7 +315,14 @@ def parse_args(version: str = "") -> Env:
         help="For testing only - do not use in production!",
     )
     parser.add_argument(
+        "--is_ui_user", action="store_true", default=False, help="User is a UI-User (not automation-user) Experimental!"
+    )
+    parser.add_argument(
         "--debug", action="store_true", default=False, help="Enable debug-out to stderr"
+    )
+    # Not really used at this late stage
+    parser.add_argument(
+        "--jaeger", action="store_true", default=False, help="Enable Jaeger tracing"
     )
     parser.add_argument(
         "--debug_log",
@@ -499,6 +508,7 @@ def parse_args(version: str = "") -> Env:
     set_dbg(args.debug, args.debug_log)
 
     env.automation_user = args.automation_user
+    env.is_ui_user = args.is_ui_user
     env.hostname_boundary_match = not args.no_hostname_boundary_match
     env.case_insensitive = args.case_insensitive
     env.no_target_found_state = args.no_target_found_state
@@ -569,3 +579,34 @@ def parse_args(version: str = "") -> Env:
 
 
     return env
+
+
+def configure_tracer() -> bool:
+    TRACER_SERVICE_NAME = "automated_downtimes"
+
+    try:
+        import logging
+        from pathlib import Path
+
+        from cmk import trace
+        from cmk.ccc.site import get_omd_config, omd_site
+        from cmk.trace.export import exporter_from_config, init_span_processor
+
+        omd_root = Path(os.environ["OMD_ROOT"])
+        omd_config = get_omd_config(omd_root)
+
+        init_span_processor(
+            trace.init_tracing(
+                service_namespace=trace.service_namespace_from_config("", omd_config),
+                service_name=TRACER_SERVICE_NAME,
+                service_instance_id=omd_site(),
+            ),
+            exporter_from_config(
+                exporter_log_level=logging.ERROR, # type: ignore
+                config=trace.trace_send_config(omd_config),
+            ),
+        )
+        return True
+    except Exception as exc:
+        dbg(f"Tracing disabled: {exc}")
+        return False

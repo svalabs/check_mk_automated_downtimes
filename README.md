@@ -10,7 +10,9 @@ if this MKP was in use in earlier versions.
 ### Requirements
 
 - CMK 2.2, 2.3, (2.1 should work but not tested): use plugin version 2.0.x
-- CMK 2.4+: use plugin versions 2.4+
+- CMK 2.4: use plugin versions 2.4+
+- CMK 2.5: use plugin versions 2.5+
+
 - CRE/Raw-edition is sufficent
 - Distributed setups are supported
 
@@ -21,7 +23,11 @@ See exchange.checkmk.com
 ### Changes
 
 
-anges:
+Changes:
+- 2.5.2 : 
+  - Supports CMK 2.4+2.5
+  - Fixes+Cache-Changes prevented GraceTime from working. Also fixed downtime-param-eval
+  - First CMK 2.5 support. Jaeger-Tracing. !!Experimental!! UI-User-Support (Improves REST-API-Access via sessions)
 
 - 2.4.17: 
   - Fix mistakenly reacting on future downtimes
