@@ -24,6 +24,9 @@ See exchange.checkmk.com
 
 
 Changes:
+- 2.5.3: 
+  - Fixes bug with "Fully Automated" + "Strip FQDN"
+
 - 2.5.2: (Beta!)
   - Supports CMK 2.4+2.5
   - Fixes+Cache-Changes prevented GraceTime from working. Also fixed downtime-param-eval

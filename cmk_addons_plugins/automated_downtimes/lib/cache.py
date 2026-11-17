@@ -221,7 +221,7 @@ class GlobalCache:
         return res
 
     def find_similar_hosts(
-        self, hostname: str, case_insensitive: bool, boundary_match: bool
+        self, hostname: str, case_insensitive: bool, boundary_match: bool, strip_fqdn: bool
     ) -> Iterable[str]:
         kw = hostname
         res = []
@@ -231,8 +231,8 @@ class GlobalCache:
             if not case_insensitive:
                 for h in self._cache.hosts_by_id.values():
                     if h.id.name.find(kw) >= 0 or h.id.alias.find(kw) >= 0:
-                        if h.id.name != kw:
-                            res.append(h.id.name)
+                        #if h.id.name != kw:
+                        res.append(h.id.name)
             else:
                 hn = kw.lower()
                 for h in self._cache.hosts_by_id.values():
@@ -240,8 +240,8 @@ class GlobalCache:
                         h.id.name.lower().find(hn) >= 0
                         or h.id.alias.lower().find(hn) >= 0
                     ):
-                        if h.id.name != hn:
-                            res.append(h.id.name)
+                        #if h.id.name != hn:
+                        res.append(h.id.name)
         else:
             # Simulate LQ-compat
             if not kw.startswith("^"):
@@ -255,10 +255,16 @@ class GlobalCache:
             re1 = re.compile(name_regex, flags)
             for h in self._cache.hosts_by_id.values():
                 if re1.match(h.id.name) or re1.match(h.id.alias):
-                    if h.id.name != hostname:
-                        res.append(h.id.name)
+                    #if h.id.name != hostname:
+                    res.append(h.id.name)
 
-        return res
+        # Strip hostname it self
+        ores = []
+        for r in res:            
+            if r != hostname and (not strip_fqdn or not r.startswith(hostname+".")): 
+                ores.append(r)
+
+        return ores
 
     def find_services(
         self,

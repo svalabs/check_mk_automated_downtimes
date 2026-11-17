@@ -165,7 +165,7 @@ class TargetListBuilder:
     def add_similar_host_names(self, host_name: str) -> None:
         hns = host_name if not self._allow_fqdn_strip else try_strip_fqdn(host_name)
         for h in self._def_api.find_similar_hosts(
-            hns, self._case_insensitive, self._hostname_boundary_match
+            hns, self._case_insensitive, self._hostname_boundary_match, self._allow_fqdn_strip
         ):
             self._result += (("Similar hostname", h, ""),) # type: ignore
 
@@ -685,7 +685,7 @@ def _needs_maint_by_host(
     reason = "?"
 
     if env.monitor_dts:
-        reason = "Downtime"
+        reason = "Downtime"        
         if env.monitor_host == env.my_host_name:
             dts = lq_api.get_downtimes(env.monitor_host, None, None) # type: ignore
             dbg(f"LQ returned DT={len(dts)} on monitored") # type: ignore
